@@ -1,0 +1,25 @@
+# Local whisper STT for earpiece (--stt whisper).
+#
+# Runs speaches (faster-whisper server) exposing the OpenAI-compatible
+# /v1/audio/transcriptions endpoint on http://localhost:8001/v1.
+# CPU image — Docker on macOS has no GPU passthrough; use a small model
+# (default: Systran/faster-whisper-small) for realtime-ish latency.
+#
+#   docker compose -f local/docker-compose.yml up -d
+#
+# Models must be installed explicitly (speaches does not auto-download):
+#   curl -X POST http://localhost:8001/v1/models/Systran/faster-whisper-small
+# scripts/run-local.sh does this automatically; the named volume caches them.
+
+services:
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    container_name: earpiece-whisper
+    ports:
+      - "8001:8000"
+    volumes:
+      - hf-hub-cache:/home/ubuntu/.cache/huggingface/hub
+    restart: unless-stopped
+
+volumes:
+  hf-hub-cache:

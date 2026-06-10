@@ -1,0 +1,58 @@
+[project]
+name = "earpiece"
+version = "0.1.0"
+description = "Real-time 'voice of god' assistant: live transcript of mic + system audio, mission-driven streamed LLM guidance with natural interruption."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Viktor Welbers" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.4.6",
+    "openai>=2.41.0",
+    "pydantic>=2.13.4",
+    "rich>=15.0.0",
+    "sounddevice>=0.5.5",
+    "typer>=0.26.7",
+    "websockets>=16.0",
+]
+
+[project.urls]
+Repository = "https://github.com/ViktorWelbers/earpiece"
+
+[project.scripts]
+earpiece = "earpiece.cli:app"
+
+[project.optional-dependencies]
+elevenlabs = [
+    "elevenlabs>=2.52.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.19,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.15.16",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+# Polling a plain list with a short sleep is the simplest deterministic
+# way to wait for "stream produced at least one delta" in tests.
+"tests/*" = ["ASYNC110"]
