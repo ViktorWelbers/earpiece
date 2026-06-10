@@ -4,7 +4,9 @@ from earpiece.config import ConfigError, Settings
 
 
 @pytest.fixture()
-def env(monkeypatch):
+def env(monkeypatch, tmp_path):
+    # isolate from any real ~/.config/earpiece/config.toml
+    monkeypatch.setenv("EARPIECE_CONFIG", str(tmp_path / "config.toml"))
     monkeypatch.setenv("LLM_API_KEY", "k")
     monkeypatch.setenv("LLM_RESPONDER_MODEL", "model-big")
     monkeypatch.setenv("DEEPGRAM_API_KEY", "dg")
@@ -93,3 +95,59 @@ def test_flags_win_over_defaults(env):
     assert s.eager is True
     assert s.tts_engine == "say"
     assert s.mic_device == "2"
+
+
+def write_config(env, tmp_path, body: str):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(body)
+    env.setenv("EARPIECE_CONFIG", str(cfg))
+    return cfg
+
+
+def test_config_file_fills_in_missing_env(env, tmp_path):
+    write_config(env, tmp_path, 'LLM_BASE_URL = "http://my-llm:8000/v1"\nLLM_VERIFY_TLS = false\n')
+    s = Settings.from_env("mission")
+    assert s.responder.base_url == "http://my-llm:8000/v1"
+    assert s.responder.verify_tls is False
+
+
+def test_env_wins_over_config_file(env, tmp_path):
+    write_config(env, tmp_path, 'LLM_BASE_URL = "http://from-file/v1"\n')
+    env.setenv("LLM_BASE_URL", "http://from-env/v1")
+    s = Settings.from_env("mission")
+    assert s.responder.base_url == "http://from-env/v1"
+
+
+def test_config_file_can_select_stt_engine(env, tmp_path):
+    env.delenv("DEEPGRAM_API_KEY")
+    write_config(
+        env,
+        tmp_path,
+        'EARPIECE_STT = "whisper"\n'
+        'STT_BASE_URL = "http://localhost:8001/v1"\n'
+        'STT_MODEL = "Systran/faster-whisper-small"\n',
+    )
+    s = Settings.from_env("mission")  # no --stt flag: file decides
+    assert s.stt_engine == "whisper"
+    assert s.stt_base_url == "http://localhost:8001/v1"
+
+
+def test_invalid_config_file_raises_config_error(env, tmp_path):
+    write_config(env, tmp_path, "not valid toml ===\n")
+    with pytest.raises(ConfigError, match="invalid TOML"):
+        Settings.from_env("mission")
+
+
+def test_save_config_roundtrip(env, tmp_path):
+    from earpiece.config import save_config
+
+    env.setenv("EARPIECE_CONFIG", str(tmp_path / "config.toml"))
+    env.delenv("LLM_API_KEY")
+    env.delenv("LLM_RESPONDER_MODEL")
+    save_config(
+        {"LLM_API_KEY": "k2", "LLM_RESPONDER_MODEL": 'has "quotes"', "LLM_VERIFY_TLS": False}
+    )
+    s = Settings.from_env("mission")
+    assert s.responder.api_key == "k2"
+    assert s.responder.model == 'has "quotes"'
+    assert s.responder.verify_tls is False

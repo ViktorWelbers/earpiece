@@ -14,7 +14,22 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-: "${LLM_BASE_URL:?set LLM_BASE_URL to your OpenAI-compatible endpoint, e.g. https://my-vllm-host/v1}"
+# Pull defaults from the earpiece config file (`earpiece configure`); env vars win.
+config="${EARPIECE_CONFIG:-$HOME/.config/earpiece/config.toml}"
+if [ -f "$config" ]; then
+  eval "$(python3 - "$config" <<'PY'
+import os, shlex, sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    for key, value in tomllib.load(f).items():
+        if key not in os.environ:
+            if isinstance(value, bool):
+                value = "true" if value else "false"
+            print(f"export {key}={shlex.quote(str(value))}")
+PY
+)"
+fi
+
+: "${LLM_BASE_URL:?set LLM_BASE_URL (or run: earpiece configure), e.g. https://my-vllm-host/v1}"
 : "${LLM_API_KEY:=local}"
 : "${STT_BASE_URL:=http://localhost:8001/v1}"
 : "${STT_MODEL:=Systran/faster-whisper-small}"

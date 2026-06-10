@@ -129,7 +129,7 @@ earpiece/
   pyproject.toml                 # uv-managed; console script `earpiece`
   uv.lock
   README.md                      # device setup (BlackHole), usage, troubleshooting
-  PLAN.md                        # this file
+  AGENTS.md                      # this file
   earpiece/
     __init__.py
     cli.py                       # arg parsing, device validation, hotkeys, wiring

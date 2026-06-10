@@ -1,6 +1,7 @@
 """CLI entry point.
 
-    earpiece "help me in this sales discussion" --voice say
+    earpiece configure
+    earpiece run "help me in this sales discussion" --voice say
     earpiece devices
 """
 
@@ -9,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import sys
 import termios
 import tty
@@ -17,7 +19,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .config import ConfigError, Settings
+from .config import ConfigError, Settings, config_path, save_config
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 err_console = Console(stderr=True)
@@ -52,12 +54,92 @@ def devices() -> None:
 
 
 @app.command()
+def configure() -> None:
+    """Interactive setup — answers are stored in ~/.config/earpiece/config.toml."""
+    _wizard()
+
+
+def _wizard() -> None:
+    console = Console()
+    console.print(
+        f"[bold]earpiece setup[/bold] — answers are stored in [cyan]{config_path()}[/cyan]"
+    )
+    console.print("[dim]Environment variables override the file; rerun anytime.[/dim]\n")
+
+    values: dict[str, str | bool] = {}
+    values["LLM_BASE_URL"] = typer.prompt(
+        "LLM base URL (any OpenAI-compatible endpoint)",
+        default=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
+    )
+    values["LLM_API_KEY"] = typer.prompt(
+        "LLM API key ('local' works for most self-hosted servers)",
+        default=os.environ.get("LLM_API_KEY", "local"),
+    )
+    values["LLM_VERIFY_TLS"] = typer.confirm(
+        "Verify TLS certificates? (answer n for self-signed certs)", default=True
+    )
+
+    models = _discover_models(
+        values["LLM_BASE_URL"], values["LLM_API_KEY"], values["LLM_VERIFY_TLS"]
+    )
+    if models:
+        console.print(f"[dim]models on this endpoint: {', '.join(models[:10])}[/dim]")
+    values["LLM_RESPONDER_MODEL"] = typer.prompt(
+        "Responder model (the smart one, streams answers)",
+        default=models[0] if models else None,
+    )
+    values["LLM_WATCHER_MODEL"] = typer.prompt(
+        "Watcher model (fast/cheap, decides when to speak)",
+        default=values["LLM_RESPONDER_MODEL"],
+    )
+
+    stt = ""
+    while stt not in ("whisper", "deepgram"):
+        stt = typer.prompt("STT engine (whisper | deepgram)", default="whisper").strip().lower()
+    values["EARPIECE_STT"] = stt
+    if stt == "whisper":
+        values["STT_BASE_URL"] = typer.prompt(
+            "Whisper endpoint (/v1 of any OpenAI-compatible transcription server)",
+            default=os.environ.get("STT_BASE_URL", "http://localhost:8001/v1"),
+        )
+        values["STT_MODEL"] = typer.prompt(
+            "Whisper model",
+            default=os.environ.get("STT_MODEL", "Systran/faster-whisper-small"),
+        )
+    else:
+        values["DEEPGRAM_API_KEY"] = typer.prompt("Deepgram API key")
+
+    path = save_config(values)
+    console.print(f"\n[green]saved[/green] {path}")
+    console.print('try it:  [bold]earpiece run "help me with tech trivia" --eager[/bold]')
+
+
+def _discover_models(base_url: str, api_key: str, verify: bool) -> list[str]:
+    """Best-effort model listing for wizard defaults; empty on any failure."""
+    import httpx
+
+    try:
+        resp = httpx.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            verify=verify,
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        return [m["id"] for m in resp.json().get("data", [])]
+    except Exception:  # noqa: BLE001 — discovery is a convenience, never fatal
+        return []
+
+
+@app.command()
 def run(
     mission: str = typer.Argument(..., help='e.g. "help me in this sales discussion"'),
     mic_device: str | None = typer.Option(None, help="Mic device index or name substring"),
     system_device: str | None = typer.Option(None, help="System-audio (loopback) device"),
     output_device: str | None = typer.Option(None, help="TTS output device (your earpiece)"),
-    stt: str = typer.Option("deepgram", help="STT engine: deepgram | whisper"),
+    stt: str | None = typer.Option(
+        None, help="STT engine: deepgram | whisper (default: from config file, else deepgram)"
+    ),
     voice: str | None = typer.Option(None, help="TTS engine: say | elevenlabs (default: text)"),
     eager: bool = typer.Option(False, "--eager", help="Respond on every THEM utterance"),
     eager_source: str = typer.Option(
@@ -72,8 +154,8 @@ def run(
         filename="earpiece.log",
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    try:
-        settings = Settings.from_env(
+    def make_settings() -> Settings:
+        return Settings.from_env(
             mission,
             mic_device=mic_device,
             system_device=system_device,
@@ -84,9 +166,19 @@ def run(
             eager_source=eager_source,
             debug_dump_wav=debug_dump_wav,
         )
+
+    try:
+        settings = make_settings()
     except ConfigError as exc:
         err_console.print(f"[red]config error:[/red] {exc}")
-        raise typer.Exit(1) from None
+        if not (sys.stdin.isatty() and typer.confirm("Run interactive setup now?", default=True)):
+            raise typer.Exit(1) from None
+        _wizard()
+        try:
+            settings = make_settings()
+        except ConfigError as exc2:
+            err_console.print(f"[red]config error:[/red] {exc2}")
+            raise typer.Exit(1) from None
 
     try:
         asyncio.run(_main(settings))
