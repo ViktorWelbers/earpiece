@@ -163,9 +163,14 @@ class Settings:
             stt_base_url=stt_base_url,
             stt_api_key=get("STT_API_KEY", "local"),
             stt_model=stt_model,
-            mic_device=mic_device,
-            system_device=system_device,
-            output_device=output_device,
+            # devices: CLI flags win, then config file / env, then auto-detect
+            mic_device=mic_device if mic_device is not None else get("EARPIECE_MIC_DEVICE"),
+            system_device=(
+                system_device if system_device is not None else get("EARPIECE_SYSTEM_DEVICE")
+            ),
+            output_device=(
+                output_device if output_device is not None else get("EARPIECE_OUTPUT_DEVICE")
+            ),
             stt_engine=stt,
             tts_engine=tts_engine,
             eager=eager,

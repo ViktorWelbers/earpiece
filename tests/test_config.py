@@ -132,6 +132,16 @@ def test_config_file_can_select_stt_engine(env, tmp_path):
     assert s.stt_base_url == "http://localhost:8001/v1"
 
 
+def test_devices_from_config_file_with_flag_override(env, tmp_path):
+    write_config(env, tmp_path, 'EARPIECE_OUTPUT_DEVICE = "FreeBuds"\nEARPIECE_MIC_DEVICE = "6"\n')
+    s = Settings.from_env("mission")
+    assert s.output_device == "FreeBuds"
+    assert s.mic_device == "6"
+    assert s.system_device is None  # unset stays auto-detect
+    s = Settings.from_env("mission", output_device="9")  # CLI flag wins
+    assert s.output_device == "9"
+
+
 def test_invalid_config_file_raises_config_error(env, tmp_path):
     write_config(env, tmp_path, "not valid toml ===\n")
     with pytest.raises(ConfigError, match="invalid TOML"):

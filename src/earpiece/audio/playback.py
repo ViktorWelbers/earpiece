@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import numpy as np
 import sounddevice as sd
@@ -18,6 +19,7 @@ from ..config import SAMPLE_RATE
 log = logging.getLogger(__name__)
 
 _BLOCK = 1024  # playback granularity ~64 ms; cancel/gate latency is one block
+_TAIL_SECS = 1.0  # how long after the last block TTS audio may still echo through capture
 
 
 class PlaybackQueue:
@@ -28,6 +30,17 @@ class PlaybackQueue:
         self._gate.set()  # ungated by default
         self._task: asyncio.Task | None = None
         self.playing = False  # observed by the system-audio STT gate
+        self._last_audio = 0.0  # monotonic time of the last written block
+
+    @property
+    def suppress_capture(self) -> bool:
+        """True while our own TTS may still be audible in the capture path.
+
+        Feedback-loop guard #2: the system-audio channel drops chunks while this
+        is set, so the assistant's voice never reaches STT — even with STT
+        engines that finalize utterances seconds after the audio happened.
+        """
+        return self.playing or (time.monotonic() - self._last_audio) < _TAIL_SECS
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="playback")
@@ -80,6 +93,7 @@ class PlaybackQueue:
                         block = buf[i : i + _BLOCK]
                         # sd.OutputStream.write blocks; keep the loop responsive.
                         await loop.run_in_executor(None, stream.write, block.reshape(-1, 1))
+                        self._last_audio = time.monotonic()
                         if self._queue.qsize() == 0 and i + _BLOCK >= len(buf):
                             break
                 finally:

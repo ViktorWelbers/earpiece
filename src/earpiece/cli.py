@@ -19,10 +19,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .config import ConfigError, Settings, config_path, save_config
+from .config import ConfigError, Settings, _load_config_file, config_path, save_config
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 err_console = Console(stderr=True)
+
+configure_app = typer.Typer(add_completion=False)
+app.add_typer(configure_app, name="configure")
 
 
 @app.command()
@@ -53,10 +56,67 @@ def devices() -> None:
     Console().print(table)
 
 
-@app.command()
-def configure() -> None:
+@configure_app.callback(invoke_without_command=True)
+def configure(ctx: typer.Context) -> None:
     """Interactive setup — answers are stored in ~/.config/earpiece/config.toml."""
-    _wizard()
+    if ctx.invoked_subcommand is None:
+        _wizard()
+
+
+_KNOWN_KEYS = (
+    "LLM_BASE_URL",
+    "LLM_API_KEY",
+    "LLM_RESPONDER_MODEL",
+    "LLM_WATCHER_MODEL",
+    "LLM_WATCHER_BASE_URL",
+    "LLM_WATCHER_API_KEY",
+    "LLM_VERIFY_TLS",
+    "LLM_JSON_SCHEMA",
+    "EARPIECE_STT",
+    "EARPIECE_MIC_DEVICE",
+    "EARPIECE_SYSTEM_DEVICE",
+    "EARPIECE_OUTPUT_DEVICE",
+    "STT_BASE_URL",
+    "STT_MODEL",
+    "STT_API_KEY",
+    "DEEPGRAM_API_KEY",
+)
+
+
+@configure_app.command()
+def show() -> None:
+    """Print the effective configuration (config file + env-var overrides)."""
+    console = Console()
+    path = config_path()
+    try:
+        file_values = _load_config_file()
+    except ConfigError as exc:
+        err_console.print(f"[red]config error:[/red] {exc}")
+        raise typer.Exit(1) from None
+    if not path.is_file():
+        console.print(f"[dim]no config file at {path} — run `earpiece configure`[/dim]")
+
+    keys = list(_KNOWN_KEYS) + sorted(set(file_values) - set(_KNOWN_KEYS))
+    table = Table(title=str(path))
+    table.add_column("key")
+    table.add_column("value")
+    table.add_column("source")
+    for key in keys:
+        env_value, file_value = os.environ.get(key), file_values.get(key)
+        if env_value is None and file_value is None:
+            continue
+        if env_value is not None:
+            source = "env (overrides file)" if file_value is not None else "env"
+        else:
+            source = "file"
+        table.add_row(key, _mask(key, env_value if env_value is not None else file_value), source)
+    console.print(table)
+
+
+def _mask(key: str, value: str) -> str:
+    if key.endswith("API_KEY") and value not in ("", "local") and len(value) > 8:
+        return f"{value[:4]}…{value[-2:]}"
+    return value
 
 
 def _wizard() -> None:

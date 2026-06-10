@@ -102,9 +102,9 @@ You hear everything normally; earpiece records the BlackHole side. Without this,
 mic channel works.
 
 > **Routing rule for `--voice`:** the TTS output device (`--output-device`, e.g. your
-> earbuds) must **not** be part of the Multi-Output Device — otherwise the assistant hears
-> and transcribes itself. (A software guard drops `THEM` transcripts while TTS plays, but
-> get the routing right.)
+> earbuds) should **not** be part of the Multi-Output Device — otherwise the people you're
+> talking to hear the assistant. (A software guard mutes the `THEM` capture channel while
+> TTS plays — plus a 1s tail — so the assistant won't transcribe itself either way.)
 
 ### 3. Configure
 
@@ -135,7 +135,11 @@ STT_MODEL = "Systran/faster-whisper-small"
 Optional keys: `LLM_WATCHER_BASE_URL` / `LLM_WATCHER_API_KEY` to put the watcher on a
 different provider, `LLM_JSON_SCHEMA = false` for providers without structured-output
 support, `DEEPGRAM_API_KEY` for `--stt deepgram`, `STT_API_KEY` for hosted whisper
-endpoints. `EARPIECE_CONFIG=/path/to/file.toml` relocates the config file.
+endpoints, and `EARPIECE_MIC_DEVICE` / `EARPIECE_SYSTEM_DEVICE` / `EARPIECE_OUTPUT_DEVICE`
+to pin audio devices (index or name substring; the matching CLI flags override).
+`EARPIECE_CONFIG=/path/to/file.toml` relocates the config file.
+`earpiece configure show` prints the effective configuration and where each value
+comes from.
 
 ## Fully local mode
 

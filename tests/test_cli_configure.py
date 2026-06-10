@@ -75,3 +75,23 @@ def test_configure_deepgram_asks_for_key(isolated_config):
     assert s.stt_engine == "deepgram"
     assert s.deepgram_api_key == "dg-key"
     assert s.watcher.model == "gpt-4.1-mini"
+
+
+def test_configure_show_prints_values_and_sources(isolated_config, monkeypatch):
+    isolated_config.write_text(
+        'LLM_BASE_URL = "http://my-llm:8000/v1"\nLLM_API_KEY = "sk-verysecretkey123"\n'
+    )
+    monkeypatch.setenv("LLM_BASE_URL", "http://from-env/v1")
+
+    result = runner.invoke(app, ["configure", "show"])
+    assert result.exit_code == 0, result.output
+    assert "http://from-env/v1" in result.output  # env wins
+    assert "overrides file" in result.output
+    assert "sk-verysecretkey123" not in result.output  # masked
+    assert "sk-v…23" in result.output
+
+
+def test_configure_show_without_file_hints_at_wizard(isolated_config):
+    result = runner.invoke(app, ["configure", "show"])
+    assert result.exit_code == 0, result.output
+    assert "no config file" in result.output

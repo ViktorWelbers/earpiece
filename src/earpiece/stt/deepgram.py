@@ -1,7 +1,11 @@
 """Deepgram streaming STT over a raw websocket (no SDK dependency).
 
-Interim results map to is_final=False (UI only); `speech_final` utterances map
-to is_final=True (drive the brain). Reconnects with backoff on connection loss.
+Deepgram finalizes long utterances in segments: mid-utterance messages with
+is_final=true carry text that is never re-sent, and the speech_final endpoint
+message carries only the words since the last finalized segment. So segments
+are buffered per utterance and concatenated at speech_final — that full text
+maps to is_final=True (drives the brain); everything earlier maps to
+is_final=False (UI only). Reconnects with backoff on connection loss.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ class DeepgramSTT:
         self.source = source
         self.endpointing_ms = settings.endpointing_ms
         self.connected = False  # surfaced in the status bar
+        self._segments: list[str] = []  # finalized segments of the current utterance
 
     def _url(self) -> str:
         params = {
@@ -55,6 +60,7 @@ class DeepgramSTT:
                 ) as ws:
                     self.connected = True
                     backoff = 1.0
+                    self._segments.clear()  # don't stitch across reconnects
                     log.info("deepgram[%s] connected", self.source)
                     sender = asyncio.create_task(self._pump_audio(ws, audio))
                     try:
@@ -91,14 +97,30 @@ class DeepgramSTT:
             return None
         alt = (msg.get("channel") or {}).get("alternatives") or [{}]
         text = (alt[0].get("transcript") or "").strip()
-        if not text:
-            return None
         now = time.monotonic()
         duration = float(msg.get("duration") or 0.0)
-        return TranscriptEvent(
-            source=self.source,
-            text=text,
-            is_final=bool(msg.get("speech_final")),
-            started_at=now - duration,
-            ended_at=now,
-        )
+
+        def event(full_text: str, *, final: bool) -> TranscriptEvent:
+            return TranscriptEvent(
+                source=self.source,
+                text=full_text,
+                is_final=final,
+                started_at=now - duration,
+                ended_at=now,
+            )
+
+        if msg.get("speech_final"):
+            # End of utterance: stitch buffered segments + this message's tail.
+            full = " ".join((*self._segments, text)).strip()
+            self._segments.clear()
+            return event(full, final=True) if full else None
+        if msg.get("is_final"):
+            # Segment finalized but the utterance continues — buffer it.
+            if text:
+                self._segments.append(text)
+                return event(" ".join(self._segments), final=False)
+            return None
+        # Plain interim: live preview = buffered segments + in-progress text.
+        if not text:
+            return None
+        return event(" ".join((*self._segments, text)), final=False)

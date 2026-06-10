@@ -160,16 +160,21 @@ class Orchestrator:
                     self.playback.gate(speaking)
                 if self.mic_muted:
                     continue
+            elif self.playback is not None and self.playback.suppress_capture:
+                # Feedback-loop guard: our own TTS loops back through the
+                # Multi-Output Device — keep it out of the THEM channel.
+                continue
             yield chunk
 
     async def _pump_stt(self, engine, audio: AsyncIterator[AudioChunk]) -> None:
         async for event in engine.stream(audio):
             self.console.status.stt = True
-            # Feedback-loop guard #2: drop system-audio STT while TTS is playing.
+            # Belt-and-suspenders: the chunk-level guard in _audio_iter should
+            # make this unreachable, but never transcribe ourselves.
             if (
                 event.source == "THEM"
                 and self.playback is not None
-                and self.playback.playing
+                and self.playback.suppress_capture
             ):
                 continue
             await self.transcript_q.put(event)
