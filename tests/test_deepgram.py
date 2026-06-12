@@ -68,3 +68,30 @@ def test_empty_messages_are_ignored():
     assert eng._parse(result("", is_final=True, speech_final=True)) is None
     assert eng._parse(json.dumps({"type": "Metadata"})) is None
     assert eng._parse(b"\x00not json") is None
+
+
+def test_utterance_end_flushes_when_speech_final_never_fires():
+    eng = make_engine()
+    eng._parse(result("the beginning of a long question", is_final=True))
+    eng._parse(result("that deepgram never endpoints", is_final=True))
+    ev = eng._parse(json.dumps({"type": "UtteranceEnd", "last_word_end": 7.1}))
+    assert ev is not None and ev.is_final
+    assert ev.text == "the beginning of a long question that deepgram never endpoints"
+    # idempotent: a second UtteranceEnd (deepgram may send one per is_final) is a no-op
+    assert eng._parse(json.dumps({"type": "UtteranceEnd", "last_word_end": 7.1})) is None
+
+
+def test_utterance_end_falls_back_to_interim_only_words():
+    eng = make_engine()
+    eng._parse(result("words that never got finalized"))
+    ev = eng._parse(json.dumps({"type": "UtteranceEnd", "last_word_end": 3.0}))
+    assert ev is not None and ev.is_final
+    assert ev.text == "words that never got finalized"
+
+
+def test_retracted_interim_is_cleared_not_stuck():
+    eng = make_engine()
+    eng._parse(result("garbled noise words"))
+    # deepgram finalizes that audio as silence — an empty final clears the grey line
+    ev = eng._parse(result("", is_final=True))
+    assert ev is not None and ev.is_final and ev.text == ""

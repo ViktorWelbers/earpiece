@@ -37,6 +37,7 @@ class DeepgramSTT:
         self.endpointing_ms = settings.endpointing_ms
         self.connected = False  # surfaced in the status bar
         self._segments: list[str] = []  # finalized segments of the current utterance
+        self._last_interim = ""  # words seen only in interim results so far
 
     def _url(self) -> str:
         params = {
@@ -45,6 +46,9 @@ class DeepgramSTT:
             "channels": 1,
             "interim_results": "true",
             "endpointing": self.endpointing_ms,
+            # Safety net: if speech_final never fires (noisy channel), deepgram
+            # sends UtteranceEnd after this much silence — we flush on it.
+            "utterance_end_ms": 1200,
             "smart_format": "true",
             "model": "nova-3",
         }
@@ -61,6 +65,7 @@ class DeepgramSTT:
                     self.connected = True
                     backoff = 1.0
                     self._segments.clear()  # don't stitch across reconnects
+                    self._last_interim = ""
                     log.info("deepgram[%s] connected", self.source)
                     sender = asyncio.create_task(self._pump_audio(ws, audio))
                     try:
@@ -93,10 +98,6 @@ class DeepgramSTT:
             msg = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError):
             return None
-        if msg.get("type") != "Results":
-            return None
-        alt = (msg.get("channel") or {}).get("alternatives") or [{}]
-        text = (alt[0].get("transcript") or "").strip()
         now = time.monotonic()
         duration = float(msg.get("duration") or 0.0)
 
@@ -109,18 +110,43 @@ class DeepgramSTT:
                 ended_at=now,
             )
 
+        if msg.get("type") == "UtteranceEnd":
+            # speech_final never fired for this utterance — flush what we have,
+            # falling back to interim-only words so nothing hangs grey forever.
+            full = " ".join(self._segments) or self._last_interim
+            self._segments.clear()
+            self._last_interim = ""
+            return event(full, final=True) if full else None
+        if msg.get("type") != "Results":
+            return None
+        alt = (msg.get("channel") or {}).get("alternatives") or [{}]
+        text = (alt[0].get("transcript") or "").strip()
+
         if msg.get("speech_final"):
             # End of utterance: stitch buffered segments + this message's tail.
             full = " ".join((*self._segments, text)).strip()
+            had_interim = bool(self._last_interim)
             self._segments.clear()
-            return event(full, final=True) if full else None
+            self._last_interim = ""
+            if full:
+                return event(full, final=True)
+            # Empty endpoint after interim-only words: deepgram retracted them —
+            # an empty final clears the stale grey line in the UI.
+            return event("", final=True) if had_interim else None
         if msg.get("is_final"):
-            # Segment finalized but the utterance continues — buffer it.
             if text:
+                # Segment finalized but the utterance continues — buffer it.
                 self._segments.append(text)
+                self._last_interim = ""
                 return event(" ".join(self._segments), final=False)
+            # Finalized as silence: any pending interim words were retracted.
+            had_interim = bool(self._last_interim)
+            self._last_interim = ""
+            if not self._segments and had_interim:
+                return event("", final=True)
             return None
         # Plain interim: live preview = buffered segments + in-progress text.
         if not text:
             return None
+        self._last_interim = text
         return event(" ".join((*self._segments, text)), final=False)

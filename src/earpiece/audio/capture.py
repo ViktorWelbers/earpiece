@@ -77,6 +77,8 @@ class ChannelCapture:
         self.source = source
         self.device = device
         self.out = out
+        self.dropped = 0  # chunks lost to backpressure — surfaced in the status bar
+        self._last_drop_log = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stream: sd.InputStream | None = None
         self._wav: wave.Wave_write | None = None
@@ -102,6 +104,16 @@ class ChannelCapture:
             self.out.put_nowait(chunk)
         except asyncio.QueueFull:
             # Drop oldest under backpressure — realtime beats completeness.
+            # This means a consumer is too slow; it MUST show up in the log.
+            self.dropped += 1
+            if chunk.ts - self._last_drop_log > 5.0:
+                self._last_drop_log = chunk.ts
+                log.warning(
+                    "%s capture dropping audio under backpressure (%d chunks lost so far) — "
+                    "the STT consumer is falling behind",
+                    self.source,
+                    self.dropped,
+                )
             try:
                 self.out.get_nowait()
             except asyncio.QueueEmpty:

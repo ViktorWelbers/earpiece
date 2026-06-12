@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -33,6 +34,10 @@ from .output.tts import macos_say  # noqa: F401 — registers the engine
 from .stt import base as stt_base  # engines are lazy-loaded by stt_base.create
 
 log = logging.getLogger(__name__)
+
+# An interim that hasn't changed for this long will never be finalized by its
+# engine (stalled transcription, retraction bug, dead connection) — promote it.
+_STALE_INTERIM_SECS = 6.0
 
 
 class Orchestrator:
@@ -95,6 +100,7 @@ class Orchestrator:
             "THEM", sys_dev, self.sys_q,
             dump_wav_to=(dump_dir / "them.wav") if dump_dir else None,
         )
+        self._captures = [mic_cap, sys_cap]  # read by the status loop (drop counts)
 
         stt_me = stt_base.create(self.settings.stt_engine, self.settings, "ME")
         stt_them = stt_base.create(self.settings.stt_engine, self.settings, "THEM")
@@ -114,6 +120,7 @@ class Orchestrator:
             asyncio.create_task(self._pump_stt(stt_me, mic_audio), name="stt-me"),
             asyncio.create_task(self._pump_stt(stt_them, sys_audio), name="stt-them"),
             asyncio.create_task(self._brain_loop(), name="brain"),
+            asyncio.create_task(self._interim_watchdog(), name="interim-watchdog"),
             asyncio.create_task(self._status_loop(), name="status"),
         ]
         if self.tts is not None:
@@ -178,6 +185,39 @@ class Orchestrator:
             ):
                 continue
             await self.transcript_q.put(event)
+
+    # ------------------------------------------------------------ watchdog
+
+    async def _interim_watchdog(self) -> None:
+        """Liveness guarantee, independent of any STT engine's quirks: a grey
+        interim line that stops updating is promoted to a final utterance so
+        its text always reaches the transcript and the LLM."""
+        while True:
+            await asyncio.sleep(1.0)
+            for event in self._stale_interim_events():
+                await self.transcript_q.put(event)
+
+    def _stale_interim_events(self) -> list[TranscriptEvent]:
+        now = time.monotonic()
+        events: list[TranscriptEvent] = []
+        for speaker, updated in list(self.transcript.interim_updated.items()):
+            if now - updated < _STALE_INTERIM_SECS:
+                continue
+            text = self.transcript.interim.get(speaker, "").strip()
+            if not text:
+                self.transcript.interim.pop(speaker, None)
+                self.transcript.interim_updated.pop(speaker, None)
+                continue
+            log.warning("promoting stale %s interim to final: %r", speaker, text)
+            events.append(
+                TranscriptEvent(
+                    source=speaker, text=text, is_final=True, started_at=updated, ended_at=now
+                )
+            )
+            # the final flows through the brain loop and clears the interim;
+            # bump the timestamp so the next tick doesn't promote it again
+            self.transcript.interim_updated[speaker] = now
+        return events
 
     # --------------------------------------------------------------- brain
 
@@ -285,5 +325,8 @@ class Orchestrator:
                 self.console.status.prompt_tokens = usage.get("prompt_tokens", 0)
                 details = usage.get("prompt_tokens_details") or {}
                 self.console.status.cached_tokens = details.get("cached_tokens") or 0
+            self.console.status.dropped_chunks = sum(
+                cap.dropped for cap in getattr(self, "_captures", [])
+            )
             self.console.refresh()
             await asyncio.sleep(1.0)

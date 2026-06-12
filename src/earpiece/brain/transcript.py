@@ -46,16 +46,33 @@ class TranscriptStore:
     _pending: list[Utterance] = field(default_factory=list)
     # live interim lines, keyed by speaker (UI only)
     interim: dict[Speaker, str] = field(default_factory=dict)
+    # monotonic time each interim last changed — read by the orchestrator watchdog
+    interim_updated: dict[Speaker, float] = field(default_factory=dict)
+    # last finalized text per speaker (text, monotonic) — duplicate suppression
+    _last_final: dict[Speaker, tuple[str, float]] = field(default_factory=dict)
+
+    _DUP_WINDOW_SECS = 10.0
 
     def add(self, event: TranscriptEvent) -> Utterance | None:
         """Merge an STT event. Returns the new Utterance for finals, else None."""
+        now = time.monotonic()
         if not event.is_final:
-            self.interim[event.source] = event.text
+            if self.interim.get(event.source) != event.text:
+                self.interim[event.source] = event.text
+                self.interim_updated[event.source] = now
             return None
         self.interim.pop(event.source, None)
+        self.interim_updated.pop(event.source, None)
+        text = event.text.strip()
+        if not text:
+            return None  # retraction: STT finalized pending words as silence
+        last = self._last_final.get(event.source)
+        if last is not None and last[0] == text and now - last[1] < self._DUP_WINDOW_SECS:
+            return None  # same text finalized twice (watchdog/engine race)
+        self._last_final[event.source] = (text, now)
         utt = Utterance(
             speaker=event.source,
-            text=event.text,
+            text=text,
             wall_time=time.strftime("%H:%M:%S"),
         )
         self.utterances.append(utt)

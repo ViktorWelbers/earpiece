@@ -37,7 +37,10 @@ def make_engine() -> WhisperAPISTT:
 
 
 async def feed(blocks: list[bytes]) -> AsyncIterator[AudioChunk]:
+    import asyncio
+
     for i, pcm in enumerate(blocks):
+        await asyncio.sleep(0)  # yield to the event loop, like real capture does
         yield AudioChunk(source="THEM", pcm=pcm, ts=i * 0.02)
 
 
@@ -99,3 +102,29 @@ async def test_failed_transcription_yields_no_event():
     engine.transcribe_fn = failing
     events = await collect(engine, [LOUD] * 20 + [SILENCE] * 40)
     assert events == []
+
+
+async def test_continuous_speech_is_capped_into_multiple_finals():
+    engine = make_engine()
+    # ~12 s of continuous speech (600 blocks): the 10 s cap must force a final
+    # mid-speech, then the VAD release produces the closing one.
+    events = await collect(engine, [LOUD] * 600 + [SILENCE] * 40)
+    finals = [e for e in events if e.is_final]
+    assert len(finals) == 2
+    assert finals[0].ended_at < 10.5  # first final arrives at the cap, not at the end
+
+
+async def test_failed_final_falls_back_to_interim_text():
+    engine = make_engine()
+    calls = {"n": 0}
+
+    async def flaky(pcm: bytes) -> str:
+        calls["n"] += 1
+        return "partial words" if calls["n"] == 1 else ""  # interim ok, final fails
+
+    engine.transcribe_fn = flaky
+    # ~4 s speech: one interim succeeds, then the final transcription fails
+    events = await collect(engine, [LOUD] * 200 + [SILENCE] * 40)
+    finals = [e for e in events if e.is_final]
+    assert len(finals) == 1
+    assert finals[0].text == "partial words"  # shown interim never hangs grey

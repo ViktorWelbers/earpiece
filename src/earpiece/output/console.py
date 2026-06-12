@@ -29,6 +29,7 @@ class StatusState:
     decision_reason: str = ""
     prompt_tokens: int = 0
     cached_tokens: int = 0
+    dropped_chunks: int = 0  # capture backpressure losses — should stay 0
     notice: str = ""
 
 
@@ -151,5 +152,7 @@ class ConsoleView:
             f"[dim]prompt {s.prompt_tokens / 1000:.1f}k tok "
             f"(cached {s.cached_tokens / 1000:.1f}k)[/dim]"
         )
+        if s.dropped_chunks:
+            line3 += f"  [red]audio dropped: {s.dropped_chunks} chunks[/red]"
         lines = Group(*(Text.from_markup(line) for line in (line1, line2, line3)))
         return Panel(lines, border_style="white")
