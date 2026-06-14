@@ -9,21 +9,27 @@ keeps a live speaker-tagged transcript, and streams back guidance as **live text
 optionally as **voice in your earpiece**.
 
 The point is that it behaves like a real-time participant, not a batch chatbot: a fast
-watcher model decides *when* to speak, a smart responder model streams *what* to say, and
-if the conversation moves on mid-answer, the in-flight answer is cancelled mid-sentence
-and replaced.
+watcher model decides *when* to speak, an **agent** produces *what to say — and can act*:
+answers come from a coding-agent harness ([pi](https://pi.dev), Claude Code, Gemini CLI, …)
+speaking the [Agent Client Protocol](https://agentclientprotocol.com), so the assistant can
+create a JIRA ticket from the conversation, run a web search, or use any MCP tool — with a
+y/n confirmation gate before anything that mutates state. If the conversation moves on
+mid-answer, the in-flight answer is cancelled mid-sentence and replaced.
 
-- **Works with any OpenAI-compatible LLM** — OpenAI, OpenRouter, Groq, local vLLM/Ollama;
-  no provider lock-in, self-signed TLS supported
+- **Bring your own agent** — any ACP harness works (`npx pi-acp`, `npx claude-agent-acp`,
+  `gemini --experimental-acp`); the harness brings its model endpoint and tools
+- **Tools with a leash** — read-only tools run instantly; writes (tickets, files, shell)
+  pause for your `y`/`n`; MCP servers from your config are forwarded to the harness
 - **Pluggable STT** — [Deepgram](https://deepgram.com) streaming, or any OpenAI-compatible
   `/audio/transcriptions` endpoint (local whisper via Docker included)
 - **Speaker attribution without diarization** — mic and system audio are separate capture
   channels, so utterances are tagged `ME` / `THEM` for free
 - **Natural interruption** — stale answers are cancelled at the next word, queued speech is
-  flushed, and the model is re-prompted with the updated transcript
+  flushed, and the agent turn is cancelled over the protocol
 - **Barge-in** — the moment you speak, voice output pauses; it never talks over you
 - **Shared-mode mic capture** — Zoom/Meet/games keep full use of the same microphone
-- **Runs fully local** — whisper in Docker + your own vLLM server; nothing leaves your machine
+- **Local-friendly** — whisper in Docker, watcher on your own vLLM/Ollama, and a harness
+  like pi configured against a local endpoint
 
 ## Quick start
 
@@ -51,21 +57,26 @@ system audio ──► STT ("THEM") ──┘                 │ on each finali
                                   respond? interrupt the current answer?
                                                   │
                                                   ▼
-                                  Responder (smart model, streaming)
-                                       │                    │
+                                  Agent harness (ACP subprocess: pi / claude / …)
+                                  owns the model + tools; MCP servers forwarded
+                                       │ text deltas        │ tool calls
                                        ▼                    ▼
-                              live answer timeline    sentence-chunked TTS
-                              (rich terminal UI)      into your earpiece
+                              live answer timeline    ⏸ y/n confirmation gate
+                              + sentence-chunked TTS  (reads auto, writes confirm)
 ```
 
-*When to speak* and *what to say* are different problems, so they get different models:
-the **watcher** is a fast, cheap model returning a structured decision per utterance; the
-**responder** is the smart one that streams the actual answer. Both are just model slots on
-the same OpenAI-compatible client and can point at different providers. Every new utterance
-is evaluated against the partial answer in flight — if it's stale, the stream task is
-cancelled, unspoken TTS is dropped, the history gets an `[interrupted]` marker, and a fresh
-answer starts. `--eager` skips the watcher entirely and answers every `THEM` utterance
-(lowest latency, ideal for trivia).
+*When to speak* and *what to say* are different problems: the **watcher** is a fast, cheap
+OpenAI-compatible model returning a structured decision per utterance (kept as a direct
+LLM call — an agent loop would blow the latency budget). The **responder** is an external
+agent harness spawned as a subprocess and driven over the
+[Agent Client Protocol](https://agentclientprotocol.com): each turn forwards the new
+transcript lines, the harness streams the answer back and may call tools along the way.
+Tool calls show up in the answers timeline (`⚙ create_ticket(...)`); anything that isn't
+read-only pauses with a status-bar banner until you press `y` or `n` (30 s ⇒ denied).
+Every new utterance is evaluated against the partial answer in flight — if it's stale, the
+turn is cancelled over the protocol, unspoken TTS is dropped, the history gets an
+`[interrupted]` marker, and a fresh turn starts. `--eager` skips the watcher entirely and
+answers every `THEM` utterance (lowest latency, ideal for trivia).
 
 The transcript is kept append-only with a frozen system prompt, so provider-side prefix
 caching works; long sessions are compacted by summarizing the oldest half. Full design doc:
@@ -112,28 +123,44 @@ mic channel works.
 earpiece configure
 ```
 
-An interactive wizard: LLM endpoint + key (models are auto-discovered from `/v1/models`
-when reachable), TLS verification, and the STT engine. Answers are stored in
-`~/.config/earpiece/config.toml`. Running `earpiece run` without any configuration offers
-the wizard automatically.
+An interactive wizard: the agent harness command, the watcher LLM endpoint + key (models
+are auto-discovered from `/v1/models` when reachable), TLS verification, and the STT
+engine. Answers are stored in `~/.config/earpiece/config.toml`. Running `earpiece run`
+without any configuration offers the wizard automatically.
 
 The file uses the same names as the environment variables, and **env vars override the
 file**, so one-off overrides stay easy:
 
 ```toml
 # ~/.config/earpiece/config.toml
+AGENT_CMD = "npx pi-acp"               # the ACP harness that answers (and acts)
 LLM_BASE_URL = "https://my-vllm-host/v1"
 LLM_API_KEY = "local"
-LLM_RESPONDER_MODEL = "my-model"
-LLM_WATCHER_MODEL = "my-small-model"   # fast/cheap turn-taking decisions
+LLM_RESPONDER_MODEL = "my-model"       # watcher + transcript summarizer
 LLM_VERIFY_TLS = false                 # self-signed certs
 EARPIECE_STT = "whisper"
 STT_BASE_URL = "http://localhost:8001/v1"
 STT_MODEL = "Systran/faster-whisper-small"
+
+# optional: extra MCP tools, forwarded to the harness at session start
+[mcp_servers.jira]
+command = "uvx"
+args = ["mcp-atlassian"]
+[mcp_servers.jira.env]
+JIRA_URL = "https://yourcompany.atlassian.net"
+JIRA_PERSONAL_TOKEN = "..."
 ```
 
-Optional keys: `LLM_WATCHER_BASE_URL` / `LLM_WATCHER_API_KEY` to put the watcher on a
-different provider, `LLM_JSON_SCHEMA = false` for providers without structured-output
+The harness must be set up on its own once (`pi` needs a provider/model configured,
+`claude-agent-acp` needs Claude Code credentials, …) — earpiece just spawns `AGENT_CMD`
+and speaks ACP to it. The harness's model is configured *in the harness*; the `LLM_*`
+keys only power the watcher.
+
+Optional keys: `AGENT_CWD` to pin the harness's working directory,
+`AGENT_AUTO_TOOLS = "jira_search*,lookup_*"` (comma-separated globs) to let specific
+non-read-only tools run without confirmation, `LLM_WATCHER_BASE_URL` /
+`LLM_WATCHER_API_KEY` / `LLM_WATCHER_MODEL` to put the watcher on a different
+provider/model, `LLM_JSON_SCHEMA = false` for providers without structured-output
 support, `DEEPGRAM_API_KEY` for `--stt deepgram`, `STT_API_KEY` for hosted whisper
 endpoints, and `EARPIECE_MIC_DEVICE` / `EARPIECE_SYSTEM_DEVICE` / `EARPIECE_OUTPUT_DEVICE`
 to pin audio devices (index or name substring; the matching CLI flags override).
@@ -145,7 +172,11 @@ comes from.
 
 No cloud STT, no cloud LLM: whisper runs in a local Docker container
 ([speaches](https://speaches.ai), CPU image, OpenAI-compatible `/v1/audio/transcriptions`
-on `localhost:8001`) and the LLM slots point at your own vLLM/Ollama server.
+on `localhost:8001`), the watcher points at your own vLLM/Ollama server, and the agent
+harness is one that supports custom OpenAI-compatible providers (e.g.
+[pi](https://github.com/earendil-works/pi) with a custom provider entry for your local
+endpoint). Note: tool calling requires the local server to parse tool calls — for vLLM
+that means starting it with `--enable-auto-tool-choice --tool-call-parser <parser>`.
 
 ```sh
 # needs Docker Desktop / OrbStack running; reads ~/.config/earpiece/config.toml
@@ -190,12 +221,15 @@ earpiece run "quiz me on networking" --eager --eager-source both
 earpiece run "..." --mic-device 6 --system-device BlackHole --output-device 1
 ```
 
-**Hotkeys while running:** `space` force an answer now · `m` mute mic · `v` toggle voice ·
-`q` quit.
+**Hotkeys while running:** `space` force an answer now · `y` / `n` approve or deny a
+pending tool call · `m` mute mic · `v` toggle voice · `q` quit.
 
 **The status bar** shows channel health (mic / sys / stt / voice), the last watcher
-decision and its reason, prompt-cache usage — and any LLM error, so failures are never
-silent (details land in `earpiece.log`).
+decision and its reason, prompt-cache usage — and any error, so failures are never silent
+(details land in `earpiece.log`). When the agent wants to run a non-read-only tool, the
+status bar switches to a yellow `confirm: <tool> — press y to run, n to deny` banner and
+the answers pane shows the pending action (`⏸`), then its outcome (`⚙` running, `✓` done,
+`✗` denied/failed).
 
 ### Microphone sharing
 

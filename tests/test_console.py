@@ -32,3 +32,37 @@ def test_interrupted_answer_is_kept_and_marked():
     stream(view, "a1", "Typical rollout is four to", interrupted=True)
     assert view.answers[0].interrupted is True
     assert view.answers[0].text == "Typical rollout is four to"
+
+
+def test_action_lifecycle_updates_one_entry():
+    view = make_view()
+    view.on_action("create_ticket", {"summary": "bug"}, "pending")
+    assert view.status.pending_action == "create_ticket"  # y/n banner up
+    view.on_action("create_ticket", {}, "running")
+    view.on_action("create_ticket", {}, "done")
+    [entry] = view.answers
+    assert entry.status == "done"
+    assert "bug" in entry.args_summary
+    assert view.status.pending_action == ""  # banner cleared
+
+
+def test_actions_and_answers_interleave_in_timeline():
+    view = make_view()
+    view.on_action("web_search", {"q": "x"}, "running")
+    view.on_action("web_search", {}, "done")
+    stream(view, "a1", "Found it: four weeks.")
+    view.on_action("web_search", {"q": "y"}, "running")  # terminal entry -> new one
+    assert [type(e).__name__ for e in view.answers] == [
+        "ActionEntry",
+        "AnswerEntry",
+        "ActionEntry",
+    ]
+    panel = view._answer_panel()  # rendering must not blow up on mixed entries
+    assert panel is not None
+
+
+def test_turn_end_clears_stale_pending_banner():
+    view = make_view()
+    view.on_action("create_ticket", {}, "pending")
+    view.on_end("a1", True)  # interrupted turn — confirmation is moot
+    assert view.status.pending_action == ""

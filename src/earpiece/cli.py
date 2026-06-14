@@ -64,6 +64,9 @@ def configure(ctx: typer.Context) -> None:
 
 
 _KNOWN_KEYS = (
+    "AGENT_CMD",
+    "AGENT_CWD",
+    "AGENT_AUTO_TOOLS",
     "LLM_BASE_URL",
     "LLM_API_KEY",
     "LLM_RESPONDER_MODEL",
@@ -112,6 +115,18 @@ def show() -> None:
         table.add_row(key, _mask(key, env_value if env_value is not None else file_value), source)
     console.print(table)
 
+    from .config import load_mcp_servers
+
+    servers = load_mcp_servers()
+    if servers:
+        mcp_table = Table(title="mcp servers (forwarded to the agent harness)")
+        mcp_table.add_column("name")
+        mcp_table.add_column("target")
+        for name, cfg in servers.items():
+            target = cfg.get("url") or " ".join([cfg.get("command", "?"), *cfg.get("args", [])])
+            mcp_table.add_row(name, target)
+        console.print(mcp_table)
+
 
 def _mask(key: str, value: str) -> str:
     if key.endswith("API_KEY") and value not in ("", "local") and len(value) > 8:
@@ -127,8 +142,20 @@ def _wizard() -> None:
     console.print("[dim]Environment variables override the file; rerun anytime.[/dim]\n")
 
     values: dict[str, str | bool] = {}
+    console.print(
+        "[bold]agent harness[/bold] — answers (and tool use) are forwarded to an ACP agent;"
+        " the harness brings its own model + tool configuration"
+    )
+    values["AGENT_CMD"] = typer.prompt(
+        'Agent command ("npx pi-acp" | "npx claude-agent-acp" | "gemini --experimental-acp")',
+        default=os.environ.get("AGENT_CMD", "npx pi-acp"),
+    )
+
+    console.print(
+        "\n[bold]watcher[/bold] — a fast OpenAI-compatible model that decides when to speak"
+    )
     values["LLM_BASE_URL"] = typer.prompt(
-        "LLM base URL (any OpenAI-compatible endpoint)",
+        "Watcher LLM base URL (any OpenAI-compatible endpoint)",
         default=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
     )
     values["LLM_API_KEY"] = typer.prompt(
@@ -145,12 +172,8 @@ def _wizard() -> None:
     if models:
         console.print(f"[dim]models on this endpoint: {', '.join(models[:10])}[/dim]")
     values["LLM_RESPONDER_MODEL"] = typer.prompt(
-        "Responder model (the smart one, streams answers)",
+        "Watcher model (fast/cheap — it runs on every utterance)",
         default=models[0] if models else None,
-    )
-    values["LLM_WATCHER_MODEL"] = typer.prompt(
-        "Watcher model (fast/cheap, decides when to speak)",
-        default=values["LLM_RESPONDER_MODEL"],
     )
 
     stt = ""
@@ -171,6 +194,11 @@ def _wizard() -> None:
 
     path = save_config(values)
     console.print(f"\n[green]saved[/green] {path}")
+    console.print(
+        "[dim]optional: give the agent extra MCP tools by adding tables to the config "
+        "file, e.g.\n  [mcp_servers.jira]\n  command = \"uvx\"\n  "
+        "args = [\"mcp-atlassian\"][/dim]"
+    )
     console.print('try it:  [bold]earpiece run "help me with tech trivia" --eager[/bold]')
 
 
@@ -248,6 +276,7 @@ def run(
 
 async def _main(settings: Settings) -> None:
     from .audio.capture import DeviceError
+    from .brain.acp import ACPError
     from .orchestrator import Orchestrator
 
     try:
@@ -259,6 +288,14 @@ async def _main(settings: Settings) -> None:
     hotkeys = asyncio.create_task(_hotkey_loop(orch))
     try:
         await orch.run()
+    except ACPError as exc:
+        err_console.print(f"[red]agent harness error:[/red] {exc}")
+        err_console.print(
+            "[dim]check AGENT_CMD (earpiece configure show) and that the harness is "
+            "installed and configured — e.g. `npx pi-acp` needs pi set up with a "
+            "provider/model.[/dim]"
+        )
+        raise typer.Exit(1) from None
     finally:
         hotkeys.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -266,7 +303,8 @@ async def _main(settings: Settings) -> None:
 
 
 async def _hotkey_loop(orch) -> None:
-    """Raw-tty hotkeys: space=push-to-ask, m=mute mic, v=toggle voice gate, q=quit."""
+    """Raw-tty hotkeys: space=push-to-ask, y/n=confirm or deny a pending tool
+    call, m=mute mic, v=toggle voice gate, q=quit."""
     loop = asyncio.get_running_loop()
     fd = sys.stdin.fileno()
     try:
@@ -280,6 +318,10 @@ async def _hotkey_loop(orch) -> None:
             match key:
                 case " ":
                     orch.push_to_ask()
+                case "y":
+                    orch.resolve_action(True)
+                case "n":
+                    orch.resolve_action(False)
                 case "m":
                     orch.toggle_mute()
                 case "v":

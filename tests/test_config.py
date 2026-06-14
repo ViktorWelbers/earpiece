@@ -7,10 +7,13 @@ from earpiece.config import ConfigError, Settings
 def env(monkeypatch, tmp_path):
     # isolate from any real ~/.config/earpiece/config.toml
     monkeypatch.setenv("EARPIECE_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setenv("AGENT_CMD", "fake-agent --acp")
     monkeypatch.setenv("LLM_API_KEY", "k")
     monkeypatch.setenv("LLM_RESPONDER_MODEL", "model-big")
     monkeypatch.setenv("DEEPGRAM_API_KEY", "dg")
     for var in (
+        "AGENT_CWD",
+        "AGENT_AUTO_TOOLS",
         "LLM_BASE_URL",
         "LLM_WATCHER_MODEL",
         "LLM_JSON_SCHEMA",
@@ -161,3 +164,66 @@ def test_save_config_roundtrip(env, tmp_path):
     assert s.responder.api_key == "k2"
     assert s.responder.model == 'has "quotes"'
     assert s.responder.verify_tls is False
+
+
+def test_agent_cmd_required(env):
+    env.delenv("AGENT_CMD")
+    with pytest.raises(ConfigError, match="AGENT_CMD"):
+        Settings.from_env("mission")
+
+
+def test_mcp_servers_tables_are_parsed(env, tmp_path):
+    write_config(
+        env,
+        tmp_path,
+        "[mcp_servers.jira]\n"
+        'command = "uvx"\n'
+        'args = ["mcp-atlassian"]\n'
+        "[mcp_servers.jira.env]\n"
+        'JIRA_URL = "https://jira.example"\n'
+        "[mcp_servers.search]\n"
+        'url = "https://mcp.example/sse"\n'
+        'transport = "sse"\n',
+    )
+    s = Settings.from_env("mission")
+    assert s.mcp_servers["jira"]["command"] == "uvx"
+    assert s.mcp_servers["jira"]["env"]["JIRA_URL"] == "https://jira.example"
+    assert s.mcp_servers["search"]["url"] == "https://mcp.example/sse"
+
+
+def test_save_config_roundtrips_mcp_servers(env, tmp_path):
+    from earpiece.config import save_config
+
+    env.setenv("EARPIECE_CONFIG", str(tmp_path / "config.toml"))
+    save_config(
+        {"AGENT_CMD": "npx pi-acp"},
+        mcp_servers={
+            "jira": {
+                "command": "uvx",
+                "args": ["mcp-atlassian"],
+                "env": {"JIRA_TOKEN": "t"},
+            }
+        },
+    )
+    s = Settings.from_env("mission")
+    assert s.mcp_servers["jira"]["args"] == ["mcp-atlassian"]
+    assert s.mcp_servers["jira"]["env"] == {"JIRA_TOKEN": "t"}
+
+
+def test_mcp_servers_map_to_acp_shape(env, tmp_path):
+    from earpiece.brain.acp import acp_mcp_servers
+
+    servers = acp_mcp_servers(
+        {
+            "jira": {"command": "uvx", "args": ["mcp-atlassian"], "env": {"A": "1"}},
+            "api": {"url": "https://mcp.example", "headers": {"Authorization": "Bearer x"}},
+        }
+    )
+    assert servers[0] == {
+        "name": "jira",
+        "command": "uvx",
+        "args": ["mcp-atlassian"],
+        "env": [{"name": "A", "value": "1"}],
+    }
+    assert servers[1]["type"] == "http"
+    assert servers[1]["headers"] == [{"name": "Authorization", "value": "Bearer x"}]

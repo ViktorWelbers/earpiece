@@ -31,6 +31,19 @@ Some of your earlier answers may be marked "[interrupted — conversation moved 
 means you were cut off because the topic changed; do not try to finish those thoughts.\
 """
 
+RESPONDER_TOOLS_ADDENDUM = """
+
+You also have tools and may ACT for the operator (create tickets, search, look things up) \
+when the conversation calls for it:
+- Use a tool when it clearly serves the mission or the operator asked for it; don't act \
+on speculation.
+- Some tools require the operator to confirm before they run; a denied tool call returns \
+an error — accept it silently or mention it in five words, never retry.
+- After a tool completes, announce it in ONE short spoken sentence with the key fact \
+("Created PROJ-123: retry logic for the export job.").
+- Never invent or guess tool results; only report what the tool actually returned.\
+"""
+
 WATCHER_SYSTEM = """\
 You decide whether a discreet real-time assistant should speak into its operator's ear right \
 now. You receive the operator's mission, the latest transcript lines ("ME" = operator, \
@@ -42,7 +55,8 @@ Decide ONE action:
 operator is handling it.
 - "respond": the operator would clearly benefit right now — a question was asked that the \
 operator may need help with, a factual claim should be checked, an objection needs handling, \
-or the operator addressed the assistant directly.
+the operator addressed the assistant directly, or the conversation calls for an action the \
+assistant can take with its tools (file a ticket, look something up, search the web).
 - "interrupt_and_respond": ONLY if an answer is currently in flight AND the new utterance \
 makes it stale (topic genuinely moved, premise changed, urgent correction needed).
 
@@ -55,8 +69,9 @@ Reply with: action, a one-sentence reason, and urgency (low | normal | high).\
 """
 
 
-def responder_system(mission: str) -> str:
-    return RESPONDER_SYSTEM.format(mission=mission)
+def responder_system(mission: str, *, with_tools: bool = False) -> str:
+    base = RESPONDER_SYSTEM.format(mission=mission)
+    return base + RESPONDER_TOOLS_ADDENDUM if with_tools else base
 
 
 def watcher_system() -> str:

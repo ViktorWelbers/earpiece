@@ -27,7 +27,7 @@ from .brain.transcript import TranscriptStore
 from .brain.watcher import Watcher
 from .config import Settings
 from .events import Action, AudioChunk, Decision, TranscriptEvent
-from .llm import LLMClient
+from .llm import LLMHandle
 from .output.console import ConsoleView, StatusState
 from .output.tts import base as tts_base
 from .output.tts import macos_say  # noqa: F401 — registers the engine
@@ -43,13 +43,15 @@ _STALE_INTERIM_SECS = 6.0
 class Orchestrator:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.llm = LLMClient(settings.responder, settings.watcher)
+        # the watcher (and compaction summarizer) stay on the plain OpenAI-compatible
+        # path — cheap structured calls; the responder is the ADK agent
+        self.watcher_llm = LLMHandle(settings.watcher)
         self.transcript = TranscriptStore(
             mission=settings.mission, max_context_tokens=settings.max_context_tokens
         )
         mode = "eager" if settings.eager else "normal"
         self.console = ConsoleView(self.transcript, StatusState(mode=mode))
-        self.watcher = Watcher(self.llm.watcher, settings.mission)
+        self.watcher = Watcher(self.watcher_llm, settings.mission)
 
         # audio plumbing
         self.mic_q: asyncio.Queue[AudioChunk] = asyncio.Queue(maxsize=512)
@@ -68,12 +70,13 @@ class Orchestrator:
         self._tts_q: asyncio.Queue[str] = asyncio.Queue()
 
         self.responder = Responder(
-            self.llm.responder,
+            settings,
             self.transcript,
             on_delta=self.console.on_delta,
             on_sentence=(self._enqueue_tts if self.tts else None),
             on_end=self.console.on_end,
             on_error=self._on_llm_error,
+            on_action=self.console.on_action,
         )
 
         self._tasks: list[asyncio.Task] = []
@@ -83,6 +86,10 @@ class Orchestrator:
     # ------------------------------------------------------------------ run
 
     async def run(self) -> None:
+        # spawn the ACP harness before anything else: a broken AGENT_CMD should
+        # be one clear startup error, not a failure on the first answer
+        await self.responder.start_agent()
+
         mic_dev = resolve_device(self.settings.mic_device, kind="input")
         sys_dev = (
             resolve_device(self.settings.system_device, kind="input")
@@ -133,6 +140,7 @@ class Orchestrator:
                 task.cancel()
             await asyncio.gather(*self._tasks, return_exceptions=True)
             await self.responder.interrupt()
+            await self.responder.close()
             if self.playback is not None:
                 await self.playback.stop()
             mic_cap.stop()
@@ -152,6 +160,11 @@ class Orchestrator:
         self.mic_muted = not self.mic_muted
         self.console.status.mic_muted = self.mic_muted
         self.console.refresh()
+
+    def resolve_action(self, approved: bool) -> None:
+        """y/n hotkey verdict on a tool call awaiting confirmation."""
+        if self.responder.resolve_action(approved):
+            self.console.refresh()
 
     # --------------------------------------------------------------- audio
 
@@ -251,7 +264,7 @@ class Orchestrator:
                     await self._start_answer()
 
             if self.transcript.needs_compaction():
-                await self.transcript.compact(self.llm.watcher)
+                await self.transcript.compact(self.watcher_llm)
 
     async def _next_brain_event(self) -> TranscriptEvent | None:
         """Wait for a transcript event OR the push-to-ask hotkey."""
@@ -320,7 +333,7 @@ class Orchestrator:
 
     async def _status_loop(self) -> None:
         while True:
-            usage = self.llm.responder.last_usage
+            usage = self.responder.last_usage
             if usage:
                 self.console.status.prompt_tokens = usage.get("prompt_tokens", 0)
                 details = usage.get("prompt_tokens_details") or {}

@@ -11,10 +11,18 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-from ..brain.responder import NOTHING
+from ..brain.responder import NOTHING, summarize_args
 from ..brain.transcript import TranscriptStore
 
 _SPEAKER_STYLE = {"ME": "bold cyan", "THEM": "bold magenta"}
+_ACTION_ICON = {"pending": "⏸", "running": "⚙", "done": "✓", "denied": "✗", "failed": "✗"}
+_ACTION_STYLE = {
+    "pending": "yellow",
+    "running": "cyan",
+    "done": "green",
+    "denied": "red",
+    "failed": "red",
+}
 
 
 @dataclass
@@ -31,6 +39,7 @@ class StatusState:
     cached_tokens: int = 0
     dropped_chunks: int = 0  # capture backpressure losses — should stay 0
     notice: str = ""
+    pending_action: str = ""  # tool name awaiting the operator's y/n
 
 
 @dataclass
@@ -43,10 +52,20 @@ class AnswerEntry:
 
 
 @dataclass
+class ActionEntry:
+    """One tool call in the timeline (pending → running → done/denied)."""
+
+    wall_time: str
+    tool: str
+    args_summary: str
+    status: str
+
+
+@dataclass
 class ConsoleView:
     transcript: TranscriptStore
     status: StatusState = field(default_factory=StatusState)
-    answers: list[AnswerEntry] = field(default_factory=list)
+    answers: list[AnswerEntry | ActionEntry] = field(default_factory=list)
     answer_text: str = ""  # the one in-flight (streaming) answer
     _live: Live | None = None
 
@@ -72,6 +91,7 @@ class ConsoleView:
 
     def on_answer_start(self) -> None:
         self.answer_text = ""
+        self.status.pending_action = ""
         self.refresh()
 
     def on_delta(self, _answer_id: str, delta: str) -> None:
@@ -81,8 +101,32 @@ class ConsoleView:
     def on_end(self, _answer_id: str, interrupted: bool) -> None:
         text = self.answer_text.strip()
         self.answer_text = ""
+        self.status.pending_action = ""  # the turn is over; nothing to confirm
         if text and text != NOTHING:
             self.answers.append(AnswerEntry(time.strftime("%H:%M:%S"), text, interrupted))
+        self.refresh()
+
+    def on_action(self, tool: str, args: dict, status: str) -> None:
+        """Tool-call lifecycle from the responder: pending → running → done/denied."""
+        entry = next(
+            (
+                e
+                for e in reversed(self.answers)
+                if isinstance(e, ActionEntry)
+                and e.tool == tool
+                and e.status in ("pending", "running")
+            ),
+            None,
+        )
+        if entry is None:
+            self.answers.append(
+                ActionEntry(time.strftime("%H:%M:%S"), tool, summarize_args(args), status)
+            )
+        else:
+            entry.status = status
+            if args and not entry.args_summary:  # later updates may carry the input
+                entry.args_summary = summarize_args(args)
+        self.status.pending_action = tool if status == "pending" else ""
         self.refresh()
 
     # -- rendering --------------------------------------------------------
@@ -119,6 +163,15 @@ class ConsoleView:
     def _answer_panel(self) -> Panel:
         blocks: list[Text] = []
         for entry in self.answers[-8:]:
+            if isinstance(entry, ActionEntry):
+                line = Text()
+                line.append(f"[{entry.wall_time}] ", style="dim")
+                label = f"{_ACTION_ICON[entry.status]} {entry.tool}({entry.args_summary})"
+                if entry.status in ("pending", "denied"):
+                    label += f" — {entry.status}"
+                line.append(label, style=_ACTION_STYLE[entry.status])
+                blocks.append(line)
+                continue
             text = Text()
             text.append(f"[{entry.wall_time}] ", style="dim")
             if entry.interrupted:
@@ -131,7 +184,7 @@ class ConsoleView:
             live.append("▌ ", style="green")
             live.append(self.answer_text)
             blocks.append(live)
-        elif blocks:
+        elif blocks and not blocks[-1].plain:
             blocks.pop()  # drop trailing spacer
         body = Group(*blocks) if blocks else Text("—", style="dim")
         return Panel(body, title="answers", border_style="green")
@@ -147,7 +200,13 @@ class ConsoleView:
             f"{dot(s.mic)} {mic_label}  {dot(s.system_audio)} sys  {dot(s.stt)} stt  "
             f"{dot(s.voice)} voice  |  mode: {s.mode}  |  decision: [bold]{s.last_decision}[/bold]"
         )
-        line2 = f"[dim]{s.notice or s.decision_reason}[/dim]"  # errors win over decisions
+        if s.pending_action:  # a tool call is waiting on the operator — nothing matters more
+            line2 = (
+                f"[bold yellow]confirm: {s.pending_action} — press y to run, n to deny"
+                f"[/bold yellow]"
+            )
+        else:
+            line2 = f"[dim]{s.notice or s.decision_reason}[/dim]"  # errors win over decisions
         line3 = (
             f"[dim]prompt {s.prompt_tokens / 1000:.1f}k tok "
             f"(cached {s.cached_tokens / 1000:.1f}k)[/dim]"
