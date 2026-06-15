@@ -24,8 +24,9 @@ mid-answer, the in-flight answer is cancelled mid-sentence and replaced.
   same session as the live conversation
 - **Tools with a leash** — read-only tools run instantly; writes (tickets, files, shell)
   pause for your `y`/`n`; MCP servers from your config are forwarded to the harness
-- **Pluggable STT** — [Deepgram](https://deepgram.com) streaming, or any OpenAI-compatible
-  `/audio/transcriptions` endpoint (local whisper via Docker included)
+- **Fast streaming STT** — [Deepgram](https://deepgram.com) by default (low latency); a local
+  whisper fallback (any OpenAI-compatible `/audio/transcriptions` endpoint, Docker included)
+  for offline use, at the cost of higher latency
 - **Speaker attribution without diarization** — mic and system audio are separate capture
   channels, so utterances are tagged `ME` / `THEM` for free
 - **Natural interruption** — when a new utterance arrives mid-answer, the stale answer is
@@ -137,11 +138,15 @@ file**, so one-off overrides stay easy:
 ```toml
 # ~/.config/earpiece/config.toml
 AGENT_CMD = "opencode acp"             # the ACP harness that answers (and acts)
-EARPIECE_STT = "whisper"
-STT_BASE_URL = "http://localhost:8001/v1"
-STT_MODEL = "Systran/faster-whisper-small"
+EARPIECE_STT = "deepgram"              # default: fast streaming STT (recommended)
+DEEPGRAM_API_KEY = "..."
+# local fallback instead of Deepgram (no cloud, but higher latency):
+#   EARPIECE_STT = "whisper"
+#   STT_BASE_URL = "http://localhost:8001/v1"
+#   STT_MODEL = "Systran/faster-whisper-small"
 
-# optional: extra MCP tools, forwarded to the harness at session start
+# optional — you normally configure MCP in the harness itself (opencode/Claude Code/…);
+# this just forwards a few extra servers to it at session start if you'd rather keep them here
 [mcp_servers.jira]
 command = "uvx"
 args = ["mcp-atlassian"]
@@ -201,14 +206,17 @@ fails fast at startup with `agent harness error: …` rather than on the first a
 > Harness commands and adapter package names evolve — check each project's ACP docs for the
 > current invocation. `opencode acp` is the configuration this project is tested against.
 
-## Local STT (whisper in Docker)
+## Whisper STT (offline fallback)
 
-The only service earpiece talks to directly is speech-to-text. To keep it off the cloud,
-run whisper in a local Docker container ([speaches](https://speaches.ai), CPU image,
-OpenAI-compatible `/v1/audio/transcriptions` on `localhost:8001`) and point `STT_*` at it.
-For a fully offline setup, also configure your agent harness against a local model — but
-that (and any tool-calling requirements of the local server) is the harness's concern, not
-earpiece's.
+**Deepgram is the default and what you want for realtime use** — its streaming endpoint is
+markedly lower-latency. Whisper is the fallback for when you can't use the cloud: it runs
+locally but finalizes noticeably slower, so expect more lag before answers.
+
+To use it, run whisper in a local Docker container ([speaches](https://speaches.ai), CPU
+image, OpenAI-compatible `/v1/audio/transcriptions` on `localhost:8001`) and set
+`EARPIECE_STT = "whisper"` with `STT_BASE_URL` / `STT_MODEL`. (For a fully offline setup,
+also point your agent harness at a local model — that's the harness's concern, not
+earpiece's.)
 
 ```sh
 # needs Docker Desktop / OrbStack running; reads ~/.config/earpiece/config.toml
@@ -225,11 +233,11 @@ plus a one-time whisper-model install — once the container is running, a plain
 
 Notes:
 
-- Docker on macOS is CPU-only; `Systran/faster-whisper-small` (the default) keeps latency
-  realtime-ish. Bigger models = better accuracy, slower finalization.
-- The whisper backend does utterance endpointing locally (energy VAD) and posts each
-  finished segment as a small WAV — slightly higher latency than Deepgram's streaming
-  endpoint, fine for everyday use.
+- Docker on macOS is CPU-only, so finalization is slow; `Systran/faster-whisper-small` (the
+  default) is the least-laggy option. Bigger models = better accuracy, slower still.
+- The whisper backend endpoints locally (energy VAD) and posts each finished segment as a
+  WAV only after you stop speaking — meaningfully higher latency than Deepgram's streaming
+  endpoint. Use Deepgram unless you specifically need to stay offline.
 - Stop the whisper container with `docker compose -f local/docker-compose.yml down`.
 
 ## Usage
