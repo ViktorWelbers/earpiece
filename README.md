@@ -8,28 +8,33 @@ this sales discussion"*, *"help me with this tech trivia"* — and it listens to
 keeps a live speaker-tagged transcript, and streams back guidance as **live text** and
 optionally as **voice in your earpiece**.
 
-The point is that it behaves like a real-time participant, not a batch chatbot: a fast
-watcher model decides *when* to speak, an **agent** produces *what to say — and can act*:
-answers come from a coding-agent harness ([pi](https://pi.dev), Claude Code, Gemini CLI, …)
+It behaves like a real-time participant, not a batch chatbot. Every time someone finishes a
+sentence — you or the other side — it answers, and you can also **type a message straight to
+it** in the chat bar. Answers come from a coding-agent harness ([opencode](https://opencode.ai),
+[Claude Code](https://www.anthropic.com/claude-code), [pi](https://pi.dev), Gemini CLI, …)
 speaking the [Agent Client Protocol](https://agentclientprotocol.com), so the assistant can
 create a JIRA ticket from the conversation, run a web search, or use any MCP tool — with a
 y/n confirmation gate before anything that mutates state. If the conversation moves on
 mid-answer, the in-flight answer is cancelled mid-sentence and replaced.
 
-- **Bring your own agent** — any ACP harness works (`npx pi-acp`, `npx claude-agent-acp`,
-  `gemini --experimental-acp`); the harness brings its model endpoint and tools
+- **Bring your own agent** — any ACP harness works (`opencode acp`,
+  `npx @zed-industries/claude-code-acp`, `gemini --experimental-acp`, `npx pi-acp`); the
+  harness brings its own model endpoint and tools. See [Choosing an agent harness](#choosing-an-agent-harness).
+- **Type to it** — an always-on chat bar forwards your message straight to the agent, in the
+  same session as the live conversation
 - **Tools with a leash** — read-only tools run instantly; writes (tickets, files, shell)
   pause for your `y`/`n`; MCP servers from your config are forwarded to the harness
 - **Pluggable STT** — [Deepgram](https://deepgram.com) streaming, or any OpenAI-compatible
   `/audio/transcriptions` endpoint (local whisper via Docker included)
 - **Speaker attribution without diarization** — mic and system audio are separate capture
   channels, so utterances are tagged `ME` / `THEM` for free
-- **Natural interruption** — stale answers are cancelled at the next word, queued speech is
-  flushed, and the agent turn is cancelled over the protocol
+- **Natural interruption** — when a new utterance arrives mid-answer, the stale answer is
+  cancelled at the next word, queued speech is flushed, and the agent turn is cancelled over
+  the protocol
 - **Barge-in** — the moment you speak, voice output pauses; it never talks over you
 - **Shared-mode mic capture** — Zoom/Meet/games keep full use of the same microphone
-- **Local-friendly** — whisper in Docker, watcher on your own vLLM/Ollama, and a harness
-  like pi configured against a local endpoint
+- **Local-friendly** — whisper in Docker and a harness like opencode/pi pointed at your own
+  vLLM/Ollama endpoint
 
 ## Quick start
 
@@ -37,50 +42,49 @@ mid-answer, the in-flight answer is cancelled mid-sentence and replaced.
 brew install blackhole-2ch          # one-time: system-audio loopback (see Setup below)
 
 git clone https://github.com/ViktorWelbers/earpiece && cd earpiece
-uv tool install .                   # installs the `earpiece` command on your PATH
+uv tool install --editable .        # installs the `earpiece` command on your PATH
 
 earpiece configure                  # interactive setup, stored in ~/.config/earpiece/
-earpiece run "help me with tech trivia" --eager
+earpiece run "help me with tech trivia"
 ```
 
 Talk, or play something with speech — the left pane fills with the transcript, the right
-pane streams timestamped answers.
+pane streams timestamped answers, and the chat bar at the bottom is always ready for you to
+type a message to the agent.
 
 ## How it works
 
 ```
 mic ────────────► STT ("ME")  ──┐
                                 ├─► rolling transcript (speaker-tagged, cache-friendly)
-system audio ──► STT ("THEM") ──┘                 │ on each finalized utterance
-   (BlackHole)                                    ▼
-                                  Watcher (fast model): stay silent?
-                                  respond? interrupt the current answer?
-                                                  │
+system audio ──► STT ("THEM") ──┘                 │ every finalized utterance
+   (BlackHole)                                    │   — or a message you type in the chat bar
                                                   ▼
-                                  Agent harness (ACP subprocess: pi / claude / …)
-                                  owns the model + tools; MCP servers forwarded
+                              Agent harness (ACP subprocess: opencode / claude / pi / …)
+                              owns the model + tools; MCP servers forwarded
                                        │ text deltas        │ tool calls
                                        ▼                    ▼
                               live answer timeline    ⏸ y/n confirmation gate
                               + sentence-chunked TTS  (reads auto, writes confirm)
 ```
 
-*When to speak* and *what to say* are different problems: the **watcher** is a fast, cheap
-OpenAI-compatible model returning a structured decision per utterance (kept as a direct
-LLM call — an agent loop would blow the latency budget). The **responder** is an external
-agent harness spawned as a subprocess and driven over the
-[Agent Client Protocol](https://agentclientprotocol.com): each turn forwards the new
-transcript lines, the harness streams the answer back and may call tools along the way.
+earpiece is the audio frontend; the **responder is an external agent harness** spawned as a
+subprocess and driven over the [Agent Client Protocol](https://agentclientprotocol.com). Each
+finalized utterance (from either channel) starts an answer turn that forwards the new
+transcript lines; the harness owns the model, the tools, and the conversation context, and
+streams the answer back. The same path serves the **chat bar**: anything you type is sent as a
+direct message into the same agent session.
+
 Tool calls show up in the answers timeline (`⚙ create_ticket(...)`); anything that isn't
-read-only pauses with a status-bar banner until you press `y` or `n` (30 s ⇒ denied).
-Every new utterance is evaluated against the partial answer in flight — if it's stale, the
-turn is cancelled over the protocol, unspoken TTS is dropped, the history gets an
-`[interrupted]` marker, and a fresh turn starts. `--eager` skips the watcher entirely and
-answers every `THEM` utterance (lowest latency, ideal for trivia).
+read-only pauses with a status-bar banner until you press `y` or `n` (30 s ⇒ denied). Every
+new utterance is evaluated against the partial answer in flight — if one is still streaming,
+it's cancelled over the protocol, unspoken TTS is dropped, the history gets an `[interrupted]`
+marker, and a fresh turn starts on the latest line.
 
 The transcript is kept append-only with a frozen system prompt, so provider-side prefix
-caching works; long sessions are compacted by summarizing the oldest half. Full design doc:
-[AGENTS.md](AGENTS.md).
+caching works; long sessions are compacted by summarizing the oldest half with a small
+utility model (the only thing the `LLM_*` keys power — the answers themselves come from the
+harness). Full design doc: [AGENTS.md](AGENTS.md).
 
 ## Setup
 
@@ -89,8 +93,9 @@ caching works; long sessions are compacted by summarizing the oldest half. Full 
 Requires macOS, Python 3.12+, and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-uv tool install .              # system-wide `earpiece` command (isolated venv)
-# or: uv tool install -e .     # editable — code changes in this checkout apply immediately
+uv tool install --editable .   # `earpiece` command tracking this checkout (recommended)
+# or: uv tool install .        # frozen copy; re-run with --reinstall after edits (the
+#                              #   version is pinned, so uv may otherwise serve a cached build)
 # or: pipx install .           # same idea via pipx
 # or: uv sync                  # dev environment only; run via `uv run earpiece`
 ```
@@ -123,7 +128,7 @@ mic channel works.
 earpiece configure
 ```
 
-An interactive wizard: the agent harness command, the watcher LLM endpoint + key (models
+An interactive wizard: the agent harness command, the utility LLM endpoint + key (models
 are auto-discovered from `/v1/models` when reachable), TLS verification, and the STT
 engine. Answers are stored in `~/.config/earpiece/config.toml`. Running `earpiece run`
 without any configuration offers the wizard automatically.
@@ -133,10 +138,10 @@ file**, so one-off overrides stay easy:
 
 ```toml
 # ~/.config/earpiece/config.toml
-AGENT_CMD = "npx pi-acp"               # the ACP harness that answers (and acts)
+AGENT_CMD = "opencode acp"             # the ACP harness that answers (and acts)
 LLM_BASE_URL = "https://my-vllm-host/v1"
 LLM_API_KEY = "local"
-LLM_RESPONDER_MODEL = "my-model"       # watcher + transcript summarizer
+LLM_RESPONDER_MODEL = "my-model"       # the transcript summarizer (NOT the answer model)
 LLM_VERIFY_TLS = false                 # self-signed certs
 EARPIECE_STT = "whisper"
 STT_BASE_URL = "http://localhost:8001/v1"
@@ -151,36 +156,74 @@ JIRA_URL = "https://yourcompany.atlassian.net"
 JIRA_PERSONAL_TOKEN = "..."
 ```
 
-The harness must be set up on its own once (`pi` needs a provider/model configured,
-`claude-agent-acp` needs Claude Code credentials, …) — earpiece just spawns `AGENT_CMD`
-and speaks ACP to it. The harness's model is configured *in the harness*; the `LLM_*`
-keys only power the watcher.
+The harness must be set up on its own once and supplies the model that actually answers —
+earpiece just spawns `AGENT_CMD` and speaks ACP to it. The `LLM_*` keys do **not** choose
+the answer model; they only power the small utility model that summarizes the transcript on
+long sessions.
 
 Optional keys: `AGENT_CWD` to pin the harness's working directory,
 `AGENT_AUTO_TOOLS = "jira_search*,lookup_*"` (comma-separated globs) to let specific
 non-read-only tools run without confirmation, `LLM_WATCHER_BASE_URL` /
-`LLM_WATCHER_API_KEY` / `LLM_WATCHER_MODEL` to put the watcher on a different
-provider/model, `LLM_JSON_SCHEMA = false` for providers without structured-output
-support, `DEEPGRAM_API_KEY` for `--stt deepgram`, `STT_API_KEY` for hosted whisper
+`LLM_WATCHER_API_KEY` / `LLM_WATCHER_MODEL` to put the utility model on a different
+provider/model, `DEEPGRAM_API_KEY` for `--stt deepgram`, `STT_API_KEY` for hosted whisper
 endpoints, and `EARPIECE_MIC_DEVICE` / `EARPIECE_SYSTEM_DEVICE` / `EARPIECE_OUTPUT_DEVICE`
 to pin audio devices (index or name substring; the matching CLI flags override).
 `EARPIECE_CONFIG=/path/to/file.toml` relocates the config file.
 `earpiece configure show` prints the effective configuration and where each value
 comes from.
 
+### Choosing an agent harness
+
+`AGENT_CMD` is a shell-style command line; earpiece spawns it and speaks ACP over its
+stdio. Each harness is configured (model, auth, tools) **in the harness itself** — earpiece
+never sees its model choice. Examples:
+
+```toml
+# opencode — uses whatever model you've configured in ~/.config/opencode/opencode.json
+AGENT_CMD = "opencode acp"
+
+# Claude Code — via Zed's ACP adapter (needs Claude Code installed + authenticated)
+AGENT_CMD = "npx @zed-industries/claude-code-acp"
+
+# Gemini CLI — needs the gemini CLI installed and authenticated
+AGENT_CMD = "gemini --experimental-acp"
+
+# pi — needs a provider/model configured in pi
+AGENT_CMD = "npx pi-acp"
+```
+
+Setup notes per harness:
+
+- **opencode** — `brew install sst/tap/opencode` (or see opencode docs), then
+  `opencode auth login` or define providers in `~/.config/opencode/opencode.json`.
+  `opencode acp` starts the ACP server on stdio; earpiece uses opencode's default model.
+- **Claude Code** — install Claude Code and sign in; the `@zed-industries/claude-code-acp`
+  adapter bridges it to ACP. `npx` fetches the adapter on first run.
+- **Gemini CLI** — install `gemini` and authenticate; `--experimental-acp` exposes the ACP
+  server.
+- **pi** — install pi and configure a provider/model; it then speaks ACP for earpiece.
+
+Use an absolute path (`AGENT_CMD = "/full/path/to/opencode acp"`) if the binary isn't on the
+`PATH` that launches earpiece. If `AGENT_CMD` is wrong or the harness isn't set up, earpiece
+fails fast at startup with `agent harness error: …` rather than on the first answer.
+
+> Harness commands and adapter package names evolve — check each project's ACP docs for the
+> current invocation. `opencode acp` is the configuration this project is tested against.
+
 ## Fully local mode
 
-No cloud STT, no cloud LLM: whisper runs in a local Docker container
+No cloud STT, no cloud model: whisper runs in a local Docker container
 ([speaches](https://speaches.ai), CPU image, OpenAI-compatible `/v1/audio/transcriptions`
-on `localhost:8001`), the watcher points at your own vLLM/Ollama server, and the agent
-harness is one that supports custom OpenAI-compatible providers (e.g.
-[pi](https://github.com/earendil-works/pi) with a custom provider entry for your local
-endpoint). Note: tool calling requires the local server to parse tool calls — for vLLM
-that means starting it with `--enable-auto-tool-choice --tool-call-parser <parser>`.
+on `localhost:8001`), the utility/summarizer model points at your own vLLM/Ollama server,
+and the agent harness is one configured against a local OpenAI-compatible provider (e.g.
+[opencode](https://opencode.ai) or [pi](https://github.com/earendil-works/pi) with a custom
+provider entry for your local endpoint). Note: tool calling requires the local server to
+parse tool calls — for vLLM that means starting it with
+`--enable-auto-tool-choice --tool-call-parser <parser>`.
 
 ```sh
 # needs Docker Desktop / OrbStack running; reads ~/.config/earpiece/config.toml
-scripts/run-local.sh "help me with tech trivia" --eager --voice say
+scripts/run-local.sh "help me with tech trivia" --voice say
 
 # env vars override the config file for one-off runs:
 STT_MODEL=Systran/faster-distil-whisper-large-v3 \
@@ -198,8 +241,6 @@ Notes:
 - The whisper backend does utterance endpointing locally (energy VAD) and posts each
   finished segment as a small WAV — slightly higher latency than Deepgram's streaming
   endpoint, fine for everyday use.
-- vLLM supports structured outputs (`LLM_JSON_SCHEMA = true`, the default); set it to
-  `false` if your build rejects `response_format: json_schema`.
 - Stop the whisper container with `docker compose -f local/docker-compose.yml down`.
 
 ## Usage
@@ -208,28 +249,37 @@ Notes:
 # list audio devices (find your mic / loopback / earpiece indices)
 earpiece devices
 
-# text-only, watcher decides when to speak
+# text-only; answers every finalized utterance, type to it in the chat bar
 earpiece run "help me in this sales discussion"
 
-# trivia mode: answer every utterance from the other side, speak into the earpiece
-earpiece run "help me with this tech trivia" --eager --voice say
-
-# solo testing without system audio: answer your own mic too
-earpiece run "quiz me on networking" --eager --eager-source both
+# speak answers into the earpiece as well
+earpiece run "help me with this tech trivia" --voice say
 
 # explicit devices (two-mic setup: mic 6 feeds earpiece, you reply on another mic)
 earpiece run "..." --mic-device 6 --system-device BlackHole --output-device 1
 ```
 
-**Hotkeys while running:** `space` force an answer now · `y` / `n` approve or deny a
-pending tool call · `m` mute mic · `v` toggle voice · `q` quit.
+**The chat bar is always on.** Whatever you type goes there:
 
-**The status bar** shows channel health (mic / sys / stt / voice), the last watcher
-decision and its reason, prompt-cache usage — and any error, so failures are never silent
-(details land in `earpiece.log`). When the agent wants to run a non-read-only tool, the
-status bar switches to a yellow `confirm: <tool> — press y to run, n to deny` banner and
-the answers pane shows the pending action (`⏸`), then its outcome (`⚙` running, `✓` done,
-`✗` denied/failed).
+| Input | Effect |
+|---|---|
+| *type text* + `Enter` | send the message straight to the agent |
+| empty `Enter` | answer now over the latest transcript (push-to-ask) |
+| `y` / `n` | approve / deny a pending tool call (while one is waiting) |
+| `/mute` | mute the mic |
+| `/voice` | toggle voice output |
+| `/quit` | quit (Ctrl-C also works) |
+
+**The status bar** shows channel health (mic / sys / stt / voice), the last decision and its
+reason, prompt-cache usage — and any error, so failures are never silent (details land in
+`earpiece.log`). When the agent wants to run a non-read-only tool, the status bar switches to
+a yellow `confirm: <tool> — press y to run, n to deny` banner and the answers pane shows the
+pending action (`⏸`), then its outcome (`⚙` running, `✓` done, `✗` denied/failed).
+
+> earpiece answers on **every** finalized utterance from both channels, so in a real
+> two-party call it can be chatty (and each turn is a full harness turn). It shines for solo
+> use — quizzing, narration, "I'll talk, you give me sidenotes" — and for trivia. Use the
+> chat bar when you want to drive it deliberately instead of letting it react.
 
 ### Microphone sharing
 
@@ -245,8 +295,11 @@ uv run ruff check .    # lint
 uv run earpiece run "..." --debug-dump-wav   # dump captured audio to debug_audio/*.wav
 ```
 
-Logs go to `earpiece.log` (`-v` for debug). Architecture and design rationale live in
-[AGENTS.md](AGENTS.md). STT and TTS engines are small registries
+When developing, install with `uv tool install --editable .` so the `earpiece` command runs
+this checkout directly (a plain `uv tool install .` makes a frozen copy and, because the
+version is pinned at `0.1.0`, may reuse a cached build — add `--reinstall` to force a
+rebuild). Logs go to `earpiece.log` (`-v` for debug). Architecture and design rationale live
+in [AGENTS.md](AGENTS.md). STT and TTS engines are small registries
 (`src/earpiece/stt/`, `src/earpiece/output/tts/`) — adding an engine is one module with a
 `@register` decorator.
 

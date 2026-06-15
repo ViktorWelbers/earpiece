@@ -55,6 +55,7 @@ class ActionEntry:
     """One tool call in the timeline (pending → running → done/denied)."""
 
     wall_time: str
+    call_id: str  # harness toolCallId — identity for status updates
     tool: str
     args_summary: str
     status: str
@@ -124,21 +125,18 @@ class ConsoleView:
             self.answers.append(AnswerEntry(time.strftime("%H:%M:%S"), text, interrupted))
         self.refresh()
 
-    def on_action(self, tool: str, args: dict, status: str) -> None:
-        """Tool-call lifecycle from the responder: pending → running → done/denied."""
+    def on_action(self, call_id: str, tool: str, args: dict, status: str) -> None:
+        """Tool-call lifecycle from the responder: pending → running → done/denied.
+
+        Matched by the harness toolCallId, so repeated calls to the same tool
+        each get their own timeline entry instead of folding onto the first."""
         entry = next(
-            (
-                e
-                for e in reversed(self.answers)
-                if isinstance(e, ActionEntry)
-                and e.tool == tool
-                and e.status in ("pending", "running")
-            ),
+            (e for e in self.answers if isinstance(e, ActionEntry) and e.call_id == call_id),
             None,
         )
         if entry is None:
             self.answers.append(
-                ActionEntry(time.strftime("%H:%M:%S"), tool, summarize_args(args), status)
+                ActionEntry(time.strftime("%H:%M:%S"), call_id, tool, summarize_args(args), status)
             )
         else:
             entry.status = status

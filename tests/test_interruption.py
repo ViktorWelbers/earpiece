@@ -35,7 +35,7 @@ def make_responder(
         on_delta=lambda aid, d: deltas.append(d),
         on_sentence=sink.on_sentence if sink else None,
         on_end=lambda aid, interrupted: ends.append((aid, interrupted)),
-        on_action=lambda tool, args, status: actions.append((tool, status)),
+        on_action=lambda call_id, tool, args, status: actions.append((tool, status)),
         agent=agent,
     )
     responder.actions = actions  # type: ignore[attr-defined] — test convenience

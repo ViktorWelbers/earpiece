@@ -75,7 +75,7 @@ class Responder:
         on_sentence: Callable[[str], None] | None = None,  # sentence chunks for TTS
         on_end: Callable[[str, bool], None] | None = None,  # (answer_id, interrupted)
         on_error: Callable[[Exception], None] | None = None,  # surfaced in the UI
-        on_action: Callable[[str, dict, str], None] | None = None,  # (tool, args, status)
+        on_action: Callable[[str, str, dict, str], None] | None = None,  # (id, tool, args, status)
         agent: ACPAgent | None = None,  # injectable for tests
     ) -> None:
         self.settings = settings
@@ -215,7 +215,7 @@ class Responder:
             self._tool_titles[tool_id] = title
             status = _STATUS_MAP.get(update.get("status") or "pending")
             if status is not None:
-                self._notify_action(title, update.get("rawInput") or {}, status)
+                self._notify_action(tool_id, title, update.get("rawInput") or {}, status)
         elif kind == "usage_update":
             self.last_usage = {
                 "prompt_tokens": update.get("used") or 0,
@@ -242,11 +242,11 @@ class Responder:
         title = tool_call.get("title") or self._tool_titles.get(tool_id, tool_id or "tool")
         args = tool_call.get("rawInput") or {}
         if self._auto_approved(title, tool_call.get("kind")):
-            return self._verdict(title, args, options, approved=True)
+            return self._verdict(tool_id, title, args, options, approved=True)
         self.pending_action = PendingAction(
             title, args, asyncio.get_running_loop().create_future()
         )
-        self._notify_action(title, args, "pending")
+        self._notify_action(tool_id, title, args, "pending")
         try:
             verdict = await asyncio.wait_for(
                 self.pending_action.decision, _CONFIRM_TIMEOUT_SECS
@@ -257,10 +257,12 @@ class Responder:
             self.pending_action = None
         if verdict == "cancel":  # the turn was interrupted; tear down quietly
             return {"outcome": {"outcome": "cancelled"}}
-        return self._verdict(title, args, options, approved=verdict == "approve")
+        return self._verdict(tool_id, title, args, options, approved=verdict == "approve")
 
-    def _verdict(self, title: str, args: dict, options: list, *, approved: bool) -> dict:
-        self._notify_action(title, args, "running" if approved else "denied")
+    def _verdict(
+        self, call_id: str, title: str, args: dict, options: list, *, approved: bool
+    ) -> dict:
+        self._notify_action(call_id, title, args, "running" if approved else "denied")
         option_id = _pick_option(options, "allow" if approved else "reject")
         if option_id is None:
             return {"outcome": {"outcome": "cancelled"}}
@@ -272,10 +274,10 @@ class Responder:
         globs = [g.strip() for g in self.settings.agent_auto_tools.split(",") if g.strip()]
         return any(fnmatch(title, glob) for glob in globs)
 
-    def _notify_action(self, tool: str, args: dict, status: str) -> None:
+    def _notify_action(self, call_id: str, tool: str, args: dict, status: str) -> None:
         log.info("tool %s %s args=%s", tool, status, args)
         if self.on_action is not None:
-            self.on_action(tool, args, status)
+            self.on_action(call_id, tool, args, status)
 
     # ------------------------------------------------------------------- tts
 

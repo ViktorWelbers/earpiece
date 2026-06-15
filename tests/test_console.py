@@ -1,5 +1,5 @@
 from earpiece.brain.transcript import TranscriptStore
-from earpiece.output.console import ConsoleView
+from earpiece.output.console import ActionEntry, ConsoleView
 
 
 def make_view() -> ConsoleView:
@@ -36,10 +36,10 @@ def test_interrupted_answer_is_kept_and_marked():
 
 def test_action_lifecycle_updates_one_entry():
     view = make_view()
-    view.on_action("create_ticket", {"summary": "bug"}, "pending")
+    view.on_action("t1", "create_ticket", {"summary": "bug"}, "pending")
     assert view.status.pending_action == "create_ticket"  # y/n banner up
-    view.on_action("create_ticket", {}, "running")
-    view.on_action("create_ticket", {}, "done")
+    view.on_action("t1", "create_ticket", {}, "running")
+    view.on_action("t1", "create_ticket", {}, "done")
     [entry] = view.answers
     assert entry.status == "done"
     assert "bug" in entry.args_summary
@@ -48,10 +48,10 @@ def test_action_lifecycle_updates_one_entry():
 
 def test_actions_and_answers_interleave_in_timeline():
     view = make_view()
-    view.on_action("web_search", {"q": "x"}, "running")
-    view.on_action("web_search", {}, "done")
+    view.on_action("s1", "web_search", {"q": "x"}, "running")
+    view.on_action("s1", "web_search", {}, "done")
     stream(view, "a1", "Found it: four weeks.")
-    view.on_action("web_search", {"q": "y"}, "running")  # terminal entry -> new one
+    view.on_action("s2", "web_search", {"q": "y"}, "running")  # new call -> new entry
     assert [type(e).__name__ for e in view.answers] == [
         "ActionEntry",
         "AnswerEntry",
@@ -61,9 +61,21 @@ def test_actions_and_answers_interleave_in_timeline():
     assert panel is not None
 
 
+def test_repeated_same_tool_calls_stay_separate_in_order():
+    """Regression: a second call to the same tool must append a new entry at the
+    end, not fold onto the first (even while the first is still pending)."""
+    view = make_view()
+    view.on_action("b1", "bash", {"cmd": "ls"}, "pending")  # never completes
+    view.on_action("b2", "bash", {"cmd": "pwd"}, "pending")  # distinct call
+    entries = [e for e in view.answers if isinstance(e, ActionEntry)]
+    assert [e.call_id for e in entries] == ["b1", "b2"]  # two entries, in order
+    assert all(e.status == "pending" for e in entries)
+    assert view.answers[-1].call_id == "b2"  # newest sits last, correct position
+
+
 def test_turn_end_clears_stale_pending_banner():
     view = make_view()
-    view.on_action("create_ticket", {}, "pending")
+    view.on_action("t1", "create_ticket", {}, "pending")
     view.on_end("a1", True)  # interrupted turn — confirmation is moot
     assert view.status.pending_action == ""
 
