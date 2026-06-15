@@ -55,18 +55,30 @@ type a message to the agent.
 
 ## How it works
 
-```
-mic ────────────► STT ("ME")  ──┐
-                                ├─► rolling transcript (speaker-tagged, cache-friendly)
-system audio ──► STT ("THEM") ──┘                 │ every finalized utterance
-   (BlackHole)                                    │   — or a message you type in the chat bar
-                                                  ▼
-                              Agent harness (ACP subprocess: opencode / claude / pi / …)
-                              owns the model + tools (incl. its own MCP servers)
-                                       │ text deltas        │ tool calls
-                                       ▼                    ▼
-                              live answer timeline    ⏸ y/n confirmation gate
-                              + sentence-chunked TTS  (reads auto, writes confirm)
+```mermaid
+flowchart LR
+    mic["🎙️ mic · ME"] --> sttA["STT"]
+    sys["🔊 system audio · THEM<br/><i>BlackHole loopback</i>"] --> sttB["STT"]
+    chat["⌨️ chat bar"]
+
+    sttA --> T
+    sttB --> T
+    T["📝 rolling transcript<br/><i>speaker-tagged · append-only</i>"] -- every finalized utterance --> H
+    chat -. direct message .-> H
+
+    H{{"🤖 ACP agent harness<br/>opencode · claude · pi<br/><i>owns the model, tools + MCP</i>"}}
+
+    H -- streamed text --> ANS["💬 answer timeline"]
+    H -- streamed text --> TTS["🔈 TTS → your earpiece"]
+    H -- tool call --> GATE{"reads run instantly<br/>writes wait for y / n"}
+    GATE -- approved --> H
+
+    classDef harness fill:#5b8def,stroke:#15317e,color:#ffffff,stroke-width:2px;
+    classDef cap fill:#0d1117,stroke:#30363d,color:#e6edf3;
+    classDef out fill:#1b3a2b,stroke:#2ea043,color:#e6edf3;
+    class H harness;
+    class mic,sys,chat cap;
+    class ANS,TTS out;
 ```
 
 earpiece is the audio frontend; the **responder is an external agent harness** spawned as a
