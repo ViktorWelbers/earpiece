@@ -38,7 +38,7 @@ class Action(StrEnum):
 
 
 class Decision(BaseModel):
-    """Watcher output, parsed from (structured) JSON."""
+    """Whether to respond to the latest utterance, surfaced in the status bar."""
 
     action: Action
     reason: str

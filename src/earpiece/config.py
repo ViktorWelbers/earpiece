@@ -20,22 +20,51 @@ def config_path() -> Path:
     return Path(os.environ.get("EARPIECE_CONFIG", "~/.config/earpiece/config.toml")).expanduser()
 
 
-def _load_config_file() -> dict[str, str]:
-    """Config-file values, normalized to the strings the env vars would hold."""
+def _read_config_toml() -> dict:
     path = config_path()
     if not path.is_file():
         return {}
     try:
-        data = tomllib.loads(path.read_text())
+        return tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid TOML in {path}: {exc}") from None
+
+
+def _load_config_file() -> dict[str, str]:
+    """Flat config-file values, normalized to the strings the env vars would hold.
+
+    Tables ([mcp_servers.*]) are structural, not env-var-shaped — see
+    `load_mcp_servers()`.
+    """
     return {
         key: ("true" if value else "false") if isinstance(value, bool) else str(value)
-        for key, value in data.items()
+        for key, value in _read_config_toml().items()
+        if not isinstance(value, dict)
     }
 
 
-def save_config(values: dict[str, str | bool]) -> Path:
+def load_mcp_servers() -> dict[str, dict]:
+    """The [mcp_servers.<name>] tables: command/args/env (stdio) or url (HTTP/SSE)."""
+    servers = _read_config_toml().get("mcp_servers", {})
+    if not isinstance(servers, dict) or not all(
+        isinstance(v, dict) for v in servers.values()
+    ):
+        raise ConfigError("mcp_servers must contain [mcp_servers.<name>] tables")
+    return servers
+
+
+def _toml_value(value: str | bool | list) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def save_config(
+    values: dict[str, str | bool], mcp_servers: dict[str, dict] | None = None
+) -> Path:
     """Write the config file (created by `earpiece configure`)."""
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,12 +72,18 @@ def save_config(values: dict[str, str | bool]) -> Path:
         "# earpiece configuration — same keys as the environment variables;",
         "# env vars override anything set here. Regenerate: earpiece configure",
     ]
-    for key, value in values.items():
-        if isinstance(value, bool):
-            lines.append(f"{key} = {'true' if value else 'false'}")
-        else:
-            escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
-            lines.append(f'{key} = "{escaped}"')
+    lines.extend(f"{key} = {_toml_value(value)}" for key, value in values.items())
+    for name, server in (mcp_servers or {}).items():
+        lines.append(f"\n[mcp_servers.{name}]")
+        env = None
+        for key, value in server.items():
+            if key == "env":
+                env = value  # subtable must come after the plain keys
+                continue
+            lines.append(f"{key} = {_toml_value(value)}")
+        if env:
+            lines.append(f"\n[mcp_servers.{name}.env]")
+            lines.extend(f"{key} = {_toml_value(value)}" for key, value in env.items())
     path.write_text("\n".join(lines) + "\n")
     return path
 
@@ -82,8 +117,6 @@ class Settings:
     output_device: int | str | None = None
     stt_engine: str = "deepgram"
     tts_engine: str | None = None  # None = text only; "say" | "elevenlabs"
-    eager: bool = False
-    eager_source: str = "them"  # "them" | "both" — which channels trigger eager answers
     endpointing_ms: int = 300
     # --stt whisper: any OpenAI-compatible /audio/transcriptions endpoint
     # (vLLM serving a Whisper model, speaches, LocalAI, OpenAI itself, ...)
@@ -93,6 +126,16 @@ class Settings:
     # transcript sliding window (approx tokens, estimated len/4)
     max_context_tokens: int = 60_000
     debug_dump_wav: bool = False
+    # the ACP agent harness that answers (and acts): a shell-ish command line,
+    # e.g. "npx pi-acp" | "npx claude-agent-acp" | "gemini --experimental-acp"
+    agent_cmd: str | None = None
+    agent_cwd: str | None = None  # workspace the harness operates in (default: cwd)
+    # comma-separated fnmatch globs of tool names that run without confirmation
+    # (read-only tool kinds — read/search/fetch/think — always auto-run)
+    agent_auto_tools: str = ""
+    # {name: {command, args, env} | {url, headers}} — from [mcp_servers.*] tables,
+    # forwarded to the harness at session setup
+    mcp_servers: dict = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
 
     @staticmethod
@@ -104,12 +147,8 @@ class Settings:
         output_device: int | str | None = None,
         stt_engine: str | None = None,
         tts_engine: str | None = None,
-        eager: bool = False,
-        eager_source: str = "them",
         debug_dump_wav: bool = False,
     ) -> Settings:
-        if eager_source not in ("them", "both"):
-            raise ConfigError("--eager-source must be 'them' or 'both'")
         cfg = _load_config_file()
 
         def get(name: str, default: str | None = None) -> str | None:
@@ -142,6 +181,14 @@ class Settings:
             verify_tls=verify_tls,
         )
 
+        agent_cmd = get("AGENT_CMD")
+        if not agent_cmd:
+            raise ConfigError(
+                "AGENT_CMD is not set — earpiece forwards answers to an ACP agent "
+                "harness. Run `earpiece configure` or set it to e.g. "
+                '"npx pi-acp" | "npx claude-agent-acp" | "gemini --experimental-acp"'
+            )
+
         stt = stt_engine or get("EARPIECE_STT", "deepgram")
         deepgram_key = get("DEEPGRAM_API_KEY")
         if stt == "deepgram" and not deepgram_key:
@@ -173,9 +220,11 @@ class Settings:
             ),
             stt_engine=stt,
             tts_engine=tts_engine,
-            eager=eager,
-            eager_source=eager_source,
             debug_dump_wav=debug_dump_wav,
+            agent_cmd=agent_cmd,
+            agent_cwd=get("AGENT_CWD"),
+            agent_auto_tools=get("AGENT_AUTO_TOOLS", ""),
+            mcp_servers=load_mcp_servers(),
         )
 
 

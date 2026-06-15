@@ -14,6 +14,9 @@ def isolated_config(monkeypatch, tmp_path):
     cfg = tmp_path / "config.toml"
     monkeypatch.setenv("EARPIECE_CONFIG", str(cfg))
     for var in (
+        "AGENT_CMD",
+        "AGENT_CWD",
+        "AGENT_AUTO_TOOLS",
         "LLM_BASE_URL",
         "LLM_API_KEY",
         "LLM_RESPONDER_MODEL",
@@ -32,11 +35,11 @@ def test_configure_whisper_writes_usable_config(isolated_config):
     # model discovery hits a closed local port and falls back to manual entry
     answers = "\n".join(
         [
-            "http://localhost:1/v1",  # LLM base URL (unreachable — discovery skipped)
+            "my-agent --acp",  # ACP harness command
+            "http://localhost:1/v1",  # watcher base URL (unreachable — discovery skipped)
             "local",  # API key
             "n",  # verify TLS
-            "my-responder",  # responder model (no discovered default)
-            "",  # watcher model (defaults to responder)
+            "my-watcher",  # watcher model (no discovered default)
             "whisper",  # STT engine
             "",  # whisper endpoint (default)
             "",  # whisper model (default)
@@ -47,10 +50,10 @@ def test_configure_whisper_writes_usable_config(isolated_config):
     assert isolated_config.is_file()
 
     s = Settings.from_env("mission")
+    assert s.agent_cmd == "my-agent --acp"
     assert s.responder.base_url == "http://localhost:1/v1"
     assert s.responder.verify_tls is False
-    assert s.responder.model == "my-responder"
-    assert s.watcher.model == "my-responder"
+    assert s.watcher.model == "my-watcher"
     assert s.stt_engine == "whisper"
     assert s.stt_base_url == "http://localhost:8001/v1"
     assert s.stt_model == "Systran/faster-whisper-small"
@@ -59,10 +62,10 @@ def test_configure_whisper_writes_usable_config(isolated_config):
 def test_configure_deepgram_asks_for_key(isolated_config):
     answers = "\n".join(
         [
+            "",  # agent command (default)
             "http://localhost:1/v1",  # unreachable — keeps the test offline
             "sk-test",
             "y",
-            "gpt-4.1",
             "gpt-4.1-mini",
             "deepgram",
             "dg-key",
@@ -72,6 +75,7 @@ def test_configure_deepgram_asks_for_key(isolated_config):
     assert result.exit_code == 0, result.output
 
     s = Settings.from_env("mission")
+    assert s.agent_cmd == "npx pi-acp"  # wizard default
     assert s.stt_engine == "deepgram"
     assert s.deepgram_api_key == "dg-key"
     assert s.watcher.model == "gpt-4.1-mini"

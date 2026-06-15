@@ -93,6 +93,19 @@ class TranscriptStore:
         messages.extend({"role": e.role, "content": e.content} for e in self._history)
         return messages
 
+    def drain_pending_block(self) -> str:
+        """Commit pending utterances and return them as one transcript block.
+
+        Used by the agentic responder, which keeps history in its ADK session
+        and only needs the lines that arrived since the previous turn.
+        """
+        if not self._pending:
+            return ""
+        block = "\n".join(u.line() for u in self._pending)
+        self._history.append(_HistoryEntry("user", block))
+        self._pending.clear()
+        return block
+
     def add_answer(self, text: str, *, interrupted: bool) -> None:
         if interrupted:
             text = f"{text} [interrupted — conversation moved on]"
@@ -109,10 +122,12 @@ class TranscriptStore:
     def needs_compaction(self) -> bool:
         return self.estimated_tokens() > self.max_context_tokens
 
-    async def compact(self, summarizer: LLMHandle) -> None:
-        """Summarize the oldest half of history into one context block."""
+    async def compact(self, summarizer: LLMHandle) -> str | None:
+        """Summarize the oldest half of history into one context block.
+
+        Returns the summary so the responder can reseed its agent session."""
         if len(self._history) < 4:
-            return
+            return None
         half = len(self._history) // 2
         old, keep = self._history[:half], self._history[half:]
         digest = "\n\n".join(f"{e.role.upper()}:\n{e.content}" for e in old)
@@ -136,3 +151,4 @@ class TranscriptStore:
             *keep,
         ]
         log.info("compacted history: %d -> %d entries", half + len(keep), len(self._history))
+        return summary

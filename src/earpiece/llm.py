@@ -107,9 +107,3 @@ class LLMHandle:
                     {"role": "system", "content": f"Invalid: {exc}. Reply with valid JSON only."},
                 ]
         raise last_error  # type: ignore[misc]
-
-
-class LLMClient:
-    def __init__(self, responder_slot: LLMSlot, watcher_slot: LLMSlot) -> None:
-        self.responder = LLMHandle(responder_slot)
-        self.watcher = LLMHandle(watcher_slot)

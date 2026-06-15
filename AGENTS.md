@@ -1,7 +1,7 @@
 # Earpiece — Real-Time "Voice of God" Assistant
 
-> Implementation plan. Status: **approved design, pre-implementation.**
-> Target platform: macOS (Apple Silicon), Python 3.12+, managed with `uv`.
+> Design reference. Status: **implemented (Phase 1 + fully-local mode)**; kept up to date as
+> the architecture evolves. Target platform: macOS (Apple Silicon), Python 3.12+, `uv`.
 
 ---
 
@@ -13,11 +13,16 @@ with a **mission** ("help me in this sales discussion", "help me with tech trivi
 1. Continuously captures **microphone** (the operator) and **system audio** (the other side of a
    call, a video, a game), and — in Phase 2 — **periodic screen captures**.
 2. Transcribes audio in real time into a rolling, speaker-tagged transcript.
-3. Decides, per utterance, *whether* it should speak up (stay silent / respond / interrupt its
-   own in-flight answer).
+3. Answers on every finalized utterance (from either channel) — and on demand, when the
+   operator types a message in the chat bar or presses enter on an empty bar — interrupting
+   its own in-flight answer whenever a newer line arrives.
 4. Streams the answer to the operator as **live text** and optionally as **voice in the
    earpiece** — and cancels mid-sentence if the conversation moves on, so the assistance feels
    like a real-time participant, not a batch Q&A bot.
+5. Can **act on the operator's behalf**: answers are produced by an external agent harness
+   (via the Agent Client Protocol), which can use tools — create a JIRA ticket from the
+   conversation, run a web search — gated by an operator y/n confirmation for anything that
+   mutates state.
 
 ### Key architectural constraint
 
@@ -38,7 +43,10 @@ else is plumbing.
 | Topic | Decision |
 |---|---|
 | Stack | Python, asyncio pipeline, `uv`-managed project |
-| LLM | **No hard provider dependency.** OpenAI-compatible chat-completions client (`openai` SDK + configurable `base_url`). Works with OpenAI, Anthropic compat endpoint, OpenRouter, Groq, Ollama, vLLM. |
+| Answers/agency | **Forwarded to an external ACP agent harness** (`AGENT_CMD`: `opencode acp`, `npx @zed-industries/claude-code-acp`, `gemini --experimental-acp`, `npx pi-acp`, …) spawned as a subprocess speaking the [Agent Client Protocol](https://agentclientprotocol.com) over stdio. The harness owns the responder model endpoint, the tools, and the conversation context. earpiece stays an audio frontend. |
+| Turn-taking | **No watcher model.** Every finalized utterance (either channel) triggers an answer turn; a newer utterance interrupts the in-flight one. The operator can also drive turns from the chat bar (type → message to the agent; empty enter → answer now). |
+| Utility LLM | **No hard provider dependency.** OpenAI-compatible chat-completions client (`openai` SDK + configurable `base_url`). Works with OpenAI, Anthropic compat endpoint, OpenRouter, Groq, Ollama, vLLM. Used **only** for transcript compaction (summarizing the oldest half of a long session). |
+| Tool safety | Reads auto, writes confirm: ACP permission requests with a read-only kind (read/search/fetch/think) or an `AGENT_AUTO_TOOLS` glob match are auto-approved; everything else waits for the operator's y/n hotkey (30 s timeout ⇒ denied). |
 | Output | Live text (terminal first, overlay later) **and** optional voice (TTS), both interruptible |
 | STT | Pluggable engine interface. Deepgram cloud streaming, plus `whisper` via any OpenAI-compatible `/audio/transcriptions` endpoint (vLLM, speaches, OpenAI) — nothing baked into the binary |
 | Phasing | Phase 1 = audio-only core loop. Phase 2a = fully local mode (whisper API + local LLM endpoint). Phase 2b = screen capture, ElevenLabs, overlay window |
@@ -54,39 +62,50 @@ else is plumbing.
  │                                                              ▼
  │                                            TranscriptStore (rolling, speaker-
  │                                            tagged, timestamped utterances)
- │                                                              │ utterance-final events
+ │                                            │ every finalized utterance
+ │                                            │ (or a chat-bar message from the operator)
  │                                                              ▼
- │                                     Watcher (fast/cheap model, structured output)
- │                                     per utterance: stay_silent | respond
- │                                                  | interrupt_and_respond
- │                                                              │
- │                                                              ▼
- │                                     Responder (smart model, streaming chat
- │                                     completion over the transcript conversation)
- │                                            │ text deltas
+ │                                     Responder = ACP client → agent harness subprocess
+ │                                     (opencode / claude-code-acp / pi / …; owns model +
+ │                                      tools; tool permissions gated by operator y/n)
+ │                                            │ text deltas + tool-call updates
  │                              ┌─────────────┴──────────────┐
  │                              ▼                            ▼
  │                     Console view (rich.Live)      TTS engine (pluggable)
- │                                                            │
+ │                     transcript | answers+actions          │
  └────────────── playback routed to earpiece device ◄─────────┘
                  (excluded from capture path — no feedback loop)
 ```
 
-### 2.1 Why two model slots (Watcher + Responder)
+### 2.1 The responder is an external agent harness
 
-*When to speak* and *what to say* are different problems:
+*What to say/do* is delegated entirely to an **ACP agent harness** (subprocess, `AGENT_CMD`).
+There is no separate "when to speak" model: earpiece answers on **every** finalized utterance,
+and the operator can drive turns directly from the chat bar. Each turn sends only the
+transcript lines since the last turn (the harness session carries history; the
+mission/instructions go out once with the first turn) — or, for a chat-bar message, the
+operator's text verbatim. The harness streams `agent_message_chunk` updates into the same
+delta path a plain completion would have used, surfaces `tool_call`/`tool_call_update` as
+timeline actions, and raises `session/request_permission` for gated tools.
 
-- **Watcher** — a fast, cheap model called once per finalized utterance with the recent
-  transcript (and the partial in-flight answer, if any). Returns a strict-JSON decision:
-  `{action, reason, urgency}`. Target latency ~300–500 ms.
-- **Responder** — the smart model. Streams the actual guidance over the full (windowed)
-  conversation. Target time-to-first-token ~500–800 ms.
+> **History note:** earlier versions ran a fast "watcher" model that decided *whether* to
+> speak per utterance (`stay_silent`/`respond`/`interrupt_and_respond`), with an `--eager`
+> flag to bypass it. That was dropped — eager-on-both-channels is the only behavior now — so
+> the watcher, its prompt, and the `--eager`/`--eager-source` flags no longer exist. The
+> OpenAI-compatible LLM handle survives only as the transcript summarizer (§4.7).
 
-Both are just configured model slots on the same OpenAI-compatible client; they may point at
-different providers (e.g. Groq for the watcher, OpenAI for the responder).
+### 2.1b Tool confirmation (reads auto, writes confirm)
 
-An `--eager` flag bypasses the Watcher entirely (respond on every "THEM" utterance end) for
-trivia-style usage where the answer is always wanted.
+ACP permission requests resolve in `brain/responder.py`:
+- auto-approve when the tool-call kind is read-only (`read`/`search`/`fetch`/`think`) or
+  the title matches an `AGENT_AUTO_TOOLS` glob;
+- otherwise a `PendingAction` is surfaced (status-bar banner + ⏸ timeline entry) and the
+  gate waits for the `y`/`n` hotkey, 30 s timeout ⇒ denied;
+- interrupting the answer resolves a pending gate as `cancelled` (the gate handler runs in
+  its own task owned by the ACP reader loop, so turn cancellation can't strand the harness).
+
+MCP servers declared in `[mcp_servers.*]` config tables are forwarded to the harness at
+`session/new` — the harness runs them; earpiece never talks to MCP servers itself.
 
 ### 2.2 Speaker attribution for free
 
@@ -96,8 +115,8 @@ Mic and system audio are captured as **separate channels**, each with its own ST
 ### 2.3 Interruption semantics (the core requirement)
 
 1. A new final utterance arrives while the Responder is streaming.
-2. The Watcher — whose prompt includes the partial answer streamed so far — returns
-   `interrupt_and_respond` if the new input makes the in-flight answer stale.
+2. Because an answer is in flight, the Orchestrator treats the new line as
+   `interrupt_and_respond` — the latest utterance always wins.
 3. The Orchestrator then, in order:
    a. cancels the asyncio task wrapping the streaming completion (closes the HTTP stream),
    b. cancels TTS playback at the next word boundary and flushes its queue,
@@ -105,17 +124,16 @@ Mic and system audio are captured as **separate channels**, each with its own ST
       `[interrupted — conversation moved on]` marker,
    d. starts a fresh Responder request over the updated transcript.
 4. **Barge-in:** voice-activity on the mic channel always pauses TTS playback instantly —
-   the assistant never talks over the operator. Resume vs discard is the Watcher's call.
+   the assistant never talks over the operator.
 
 ### 2.4 Latency budget (utterance end → first words in ear)
 
 | Stage | Budget |
 |---|---|
 | STT finalization (endpointing) | ~300 ms |
-| Watcher decision | ~300–500 ms |
 | Responder TTFT | ~500–800 ms |
 | TTS first audio chunk | ~200 ms |
-| **Total** | **~1.3–1.8 s** (`--eager` drops the Watcher hop) |
+| **Total** | **~1.0–1.3 s** (no watcher hop) |
 
 ---
 
@@ -149,9 +167,9 @@ earpiece/
       whisper_api.py             # local VAD endpointing + OpenAI-compatible transcriptions API
     brain/
       __init__.py
-      transcript.py              # TranscriptStore + chat-messages builder
-      watcher.py                 # decision calls (structured output w/ JSON fallback)
-      responder.py               # streaming answers, interruption bookkeeping
+      transcript.py              # TranscriptStore + chat-messages builder + compaction
+      responder.py               # agent turns over ACP, chat-bar messages, interruption + gate
+      acp.py                     # minimal ACP client (JSON-RPC over subprocess stdio)
       prompts.py                 # frozen system prompts (cache-safe), mission templating
     output/
       __init__.py
@@ -167,7 +185,6 @@ earpiece/
   tests/
     fakes.py                     # FakeSTT, FakeLLM, FakeTTS — fully scripted, no I/O
     test_transcript.py
-    test_watcher.py
     test_interruption.py
     test_config.py
     test_whisper_api.py
@@ -206,7 +223,7 @@ class Action(StrEnum):
     RESPOND = "respond"
     INTERRUPT_AND_RESPOND = "interrupt_and_respond"
 
-class Decision(BaseModel):   # Watcher output (pydantic — parsed from JSON)
+class Decision(BaseModel):   # brain decision surfaced in the status bar (no longer LLM-parsed)
     action: Action
     reason: str              # one sentence, for the status bar / logs
     urgency: Literal["low", "normal", "high"]
@@ -228,19 +245,21 @@ A single `Settings` object resolved from env vars + CLI flags (flags win):
 
 | Setting | Env | Default |
 |---|---|---|
+| Agent harness | `AGENT_CMD` | — (required), e.g. `npx pi-acp` |
+| Agent workspace | `AGENT_CWD` | earpiece's cwd |
+| Auto-approved tools | `AGENT_AUTO_TOOLS` | empty (comma-separated fnmatch globs) |
+| MCP servers | `[mcp_servers.*]` config tables (file only) | none |
 | LLM base URL | `LLM_BASE_URL` | `https://api.openai.com/v1` |
 | LLM API key | `LLM_API_KEY` | — (required) |
-| Responder model | `LLM_RESPONDER_MODEL` | — (required) |
-| Watcher model | `LLM_WATCHER_MODEL` | falls back to responder model |
-| Watcher base URL/key | `LLM_WATCHER_BASE_URL` / `LLM_WATCHER_API_KEY` | falls back to main |
-| Supports json_schema | `LLM_JSON_SCHEMA` | `true` (set `false` for providers without it) |
+| Utility/summarizer model | `LLM_RESPONDER_MODEL` | — (required) |
+| Summarizer model override | `LLM_WATCHER_MODEL` | falls back to `LLM_RESPONDER_MODEL` |
+| Summarizer base URL/key | `LLM_WATCHER_BASE_URL` / `LLM_WATCHER_API_KEY` | falls back to main |
 | Deepgram key | `DEEPGRAM_API_KEY` | required when `--stt deepgram` |
 | Mic device | `--mic-device` | system default input |
 | System-audio device | `--system-device` | auto-detect "BlackHole" |
 | TTS output device | `--output-device` | system default output |
 | STT engine | `--stt` | `deepgram` |
 | TTS engine | `--voice` | off; `say` / `elevenlabs` |
-| Eager mode | `--eager` | off |
 
 `earpiece devices` subcommand prints `sounddevice.query_devices()` in a table with indices and
 marks the auto-detected candidates.
@@ -249,14 +268,11 @@ marks the auto-detected candidates.
 
 Thin wrapper around `openai.AsyncOpenAI(base_url=…, api_key=…)`:
 
-- `stream_chat(messages, model) -> AsyncIterator[str]` — yields content deltas; raises
+- `stream_chat(messages) -> AsyncIterator[str]` — yields content deltas; raises
   `asyncio.CancelledError` cleanly through (the stream's `close()` runs in a `finally`).
-- `structured(messages, model, schema: type[BaseModel]) -> BaseModel` — uses
-  `response_format={"type": "json_schema", …}` when `LLM_JSON_SCHEMA=true`; otherwise appends a
-  "reply ONLY with JSON matching …" instruction and parses with pydantic, with **one retry** on
-  validation failure. Capability is a config flag, not runtime sniffing.
-- Two pre-bound handles exposed: `llm.responder` and `llm.watcher` (model + endpoint resolved
-  from Settings).
+- One handle is built at runtime — `Orchestrator.summarizer` (`LLMHandle(settings.watcher)`) —
+  used only for transcript compaction (§4.7). (`structured()` for JSON output still exists but
+  is unused — a leftover from the watcher.)
 
 **Cache-friendliness rule (provider-independent):** conversation prefix must be byte-stable —
 frozen system prompt, **no timestamps/UUIDs in the system prompt**, append-only history. That way
@@ -313,7 +329,10 @@ class STTEngine(Protocol):
 
 - `TranscriptStore.add(event)` — merges interim/final events into utterances
   `(speaker, text, t_start, t_end)`; interim events only update the live console.
-- `as_messages()` — builds the chat history for LLM calls:
+- The ACP responder consumes `drain_pending_block()` — only the lines since the previous
+  turn (the harness session holds the rest). `as_messages()` below builds a full local mirror
+  used only by compaction; it is **not** sent to the harness.
+- `as_messages()` — builds the chat history:
   - one frozen system message (persona + mission + output-style rules),
   - transcript deltas as user messages, each line `"[hh:mm:ss] THEM: …"`,
   - prior assistant answers as assistant messages
@@ -321,33 +340,39 @@ class STTEngine(Protocol):
   - **Append-only.** New utterances since the last call become one new user message; history is
     never rewritten (keeps provider-side prefix caches valid).
 - **Sliding window:** beyond ~60 K tokens (estimated `len/4`), summarize the oldest half via the
-  watcher model into a single `"[earlier conversation summary] …"` user message. This is the only
-  history rewrite, and it intentionally resets the cache prefix once per long session.
+  summarizer model into a single `"[earlier conversation summary] …"` user message. (In the
+  ACP design this only trims the local mirror; the harness manages its own context window.)
 
-### 4.8 `brain/watcher.py`
+### 4.8 `brain/watcher.py` — removed
 
-Called once per **final** utterance (skipped entirely in `--eager` mode). Prompt contains:
+The per-utterance "should I speak?" decision model and its prompt were removed; every
+finalized utterance now answers (see §2.1). `events.Decision`/`Action` remain as the
+status-bar carrier the orchestrator fills in directly.
 
-- a short role description ("you decide if a discreet real-time assistant should speak"),
-- the mission,
-- the last ~15 transcript lines,
-- the in-flight partial answer, if any (so it can choose `interrupt_and_respond`),
-- decision guidance: silence is the default; respond when the operator clearly benefits
-  (a question was asked, a factual claim needs checking, an objection needs handling);
-  interrupt only when the topic genuinely moved.
+### 4.9 `brain/responder.py` + `brain/acp.py`
 
-Returns a `Decision`. On any LLM/parse error: fail safe to `STAY_SILENT` and log.
-ME-utterances also flow through (the operator may address the assistant directly:
-"what was that thing called…"), but with guidance that ME usually doesn't need an answer.
-
-### 4.9 `brain/responder.py`
-
-- `respond(history) -> answer_id` spawns the streaming task; deltas fan out to console + TTS
-  (sentence-buffered for TTS: split on `.?!` ≥ ~40 chars so speech doesn't stutter).
-- Owns answer bookkeeping: on natural end append the full answer as an assistant message; on
-  cancellation append what was streamed + the interrupted marker.
-- Style is enforced by the system prompt (§4.11): 1–3 sentences for spoken cues, bullets allowed
-  in text-only mode; never preamble ("Here's what you could say" is banned — output *is* the cue).
+- `acp.py` is a minimal hand-rolled ACP client: JSON-RPC 2.0, one LF-delimited JSON object
+  per line over the harness subprocess' stdio. Outbound requests (`initialize`,
+  `session/new`, `session/prompt`) correlate responses via id→future; a reader task
+  dispatches inbound traffic — `session/update` notifications to a callback, agent→client
+  requests (`session/request_permission`) to per-request handler tasks; `fs/*`/`terminal`
+  requests are rejected (we advertise no such capabilities — the harness must not read the
+  operator's files through us). Harness stderr is pumped into the log; a dead harness fails
+  all pending requests with a clear `ACPError`.
+- `responder.py` drives turns: `start(prompt_text=None)` spawns the turn task; `session/prompt`
+  carries the pending transcript lines — or, when `prompt_text` is given (a chat-bar message),
+  the operator's text verbatim (mission instructions prefix the first turn only). Streamed
+  `agent_message_chunk`s fan out to console + TTS (sentence-buffered: split on `.?!` ≥ ~40
+  chars so speech doesn't stutter); tool calls fan out to the answers timeline, keyed by the
+  harness `toolCallId` so repeated calls to one tool stay distinct.
+- Interruption: cancelling the turn task sends `session/cancel`, commits the partial answer
+  with the interrupted marker, and resolves any pending permission gate as `cancelled`.
+- Owns answer bookkeeping: on natural end append the full answer as an assistant message
+  (the local history still feeds compaction).
+- The harness is spawned at orchestrator startup (`start_agent()`) so a broken `AGENT_CMD`
+  is one clear error before audio starts, with a lazy fallback on first turn.
+- Style is enforced by the instructions prompt (§4.11): 1–3 sentences for spoken cues; tool
+  use is announced in one short sentence, results never invented.
 
 ### 4.10 `orchestrator.py`
 
@@ -362,20 +387,20 @@ state:   current_answer: {id, task, text_so_far} | None
 `brain_loop` (sequential, the decision point):
 
 ```
-for each final TranscriptEvent:
+for each final TranscriptEvent (or push-to-ask / chat-bar submit):
     transcript.add(event)
-    if eager and event.source == THEM:          decision = RESPOND-or-INTERRUPT (auto)
-    else:                                       decision = await watcher.decide(...)
-    match decision.action:
-        STAY_SILENT            → continue
-        RESPOND                → if no answer in flight: start responder task
+    action = INTERRUPT_AND_RESPOND if answer in flight else RESPOND
+    match action:
+        RESPOND                → start responder task (over new transcript lines,
+                                  or the operator's chat-bar message)
         INTERRUPT_AND_RESPOND  → cancel current answer task → flush TTS → mark history
                                  → start responder task
 ```
 
-Watcher calls are serialized (one at a time); utterances arriving during a watcher call are
-coalesced into the next call. Push-to-ask hotkey injects a synthetic `RESPOND` decision.
-Shutdown: cancel all tasks, close streams, drain queues — `q` exits cleanly in <1 s.
+Turns are serialized (one at a time); utterances arriving during a turn are coalesced into
+the next. An empty chat-bar submit (push-to-ask) forces a turn over the current transcript;
+typed text is forwarded to the agent as a direct message. Shutdown: cancel all tasks, close
+streams, drain queues — `/quit` (or Ctrl-C) exits cleanly in <1 s.
 
 ### 4.11 `brain/prompts.py`
 
@@ -383,7 +408,8 @@ Shutdown: cancel all tasks, close streams, drain queues — `q` exits cleanly in
   persona ("discreet real-time copilot whispering in the operator's ear"), the mission verbatim,
   transcript format explanation (ME/THEM), output style rules (short, directly speakable,
   no meta-commentary, no preamble), language: respond in the conversation's language.
-- `WATCHER_TEMPLATE`: as in §4.8, with the JSON contract appended only in fallback mode.
+- A tools addendum is appended when the harness can act (tool-use etiquette: announce in one
+  short sentence, never invent results).
 - Templates contain **no dynamic values** other than the mission (cache safety).
 
 ### 4.12 `output/console.py`
@@ -392,16 +418,24 @@ Shutdown: cancel all tasks, close streams, drain queues — `q` exits cleanly in
 
 ```
 ┌─ transcript ────────────────────────────┬─ answer ───────────────────────┐
-│ [14:02:03] THEM: …                      │ (streaming answer text)        │
-│ [14:02:11] ME: …                        │                                │
+│ [14:02:03] THEM: …                      │ you: <chat message>            │
+│ [14:02:11] ME: …                        │ (streaming answer text)        │
 │ ▌interim line in dim style              │                                │
-├─────────────────────────────────────────┴────────────────────────────────┤
-│ status: ● mic ● sys ● stt ● llm | mode: normal | last decision: respond  │
-│         (“why”: watcher reason) | tokens: prompt 12.3k (cached 11.8k)    │
+├─ chat → agent ─────────────────────────────────────────────────────────────┤
+│ › type a message, enter sends                                              │
+├──────────────────────────────────────────────────────────────────────────┤
+│ status: ● mic ● sys ● stt ● voice | decision: respond                     │
+│         (reason) | tokens: prompt 12.3k (cached 11.8k) | /mute /voice /quit│
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Hotkeys (raw tty reader task): `space` push-to-ask, `m` mute mic, `v` toggle voice, `q` quit.
+Input (raw tty reader task): an always-on chat bar captures typed text; `enter` sends it to
+the agent as a direct message, an empty `enter` is push-to-ask. `y`/`n` approve/deny a
+pending tool call (while one is waiting); `/mute`, `/voice`, `/quit` are slash commands
+(Ctrl-C also quits). The answers pane interleaves tool-call action lines (`⏸ pending` →
+`⚙ running` → `✓ done` / `✗ denied|failed`), the operator's own `you:` messages, and the
+answer timeline (action entries keyed by `toolCallId`); a pending confirmation takes over the
+status-bar notice line.
 
 ### 4.13 `output/tts/`
 
@@ -423,8 +457,8 @@ class TTSEngine(Protocol):
 - Latest frame only (not a backlog) is attached to Responder requests as a standard
   OpenAI-compatible `image_url` content part (base64 data URI). Per-provider capability flag —
   local models without vision simply never get frames.
-- The Watcher gains a `look_at_screen` hint field so "look at this" in the transcript can force
-  a fresh capture before responding.
+- A "look at this" cue in the transcript can force a fresh capture before the next turn
+  (Phase 2 detail; nothing gates turns anymore).
 
 ---
 
@@ -451,12 +485,12 @@ actionable errors ("BlackHole not found — run: brew install blackhole-2ch …"
 
 ## 6. Sequence walkthroughs
 
-### 6.1 Happy path ("tech trivia" with `--eager`)
+### 6.1 Happy path ("tech trivia")
 
 ```
 THEM (video): "…what year was the transistor invented?"
   → Deepgram speech_final (≈300ms) → TranscriptStore
-  → eager: skip watcher → responder.stream()
+  → finalized utterance → responder turn starts
   → console starts printing ≈700ms later: "1947 — Bell Labs (Bardeen, Brattain, Shockley)."
   → first TTS words in ear ≈1.2s after the question ended
 ```
@@ -465,9 +499,9 @@ THEM (video): "…what year was the transistor invented?"
 
 ```
 THEM: "What does the integration timeline look like?"
-  → watcher: respond → responder streams "Typical rollout is 4–6 weeks…"
+  → responder streams "Typical rollout is 4–6 weeks…"
 THEM (2s later): "—actually, hold on, the bigger issue for us is pricing."
-  → watcher sees partial answer + new utterance → interrupt_and_respond
+  → new utterance while an answer is in flight → interrupt_and_respond
   → orchestrator: cancel stream task → TTS stops at word boundary → history gets
     "Typical rollout is 4–6 weeks… [interrupted — conversation moved on]"
   → new stream: "On pricing: lead with the platform fee structure…"
@@ -479,8 +513,7 @@ THEM (2s later): "—actually, hold on, the bigger issue for us is pricing."
 ```
 TTS speaking a cue → operator starts talking (mic VAD fires)
   → PlaybackQueue.gate(True) within one 20ms block — TTS pauses instantly
-  → operator finishes → watcher decides: resume remaining cue, or discard (default: discard
-    if >5s elapsed or topic moved)
+  → operator finishes → TTS stays paused; the next finalized utterance starts a fresh turn
 ```
 
 ---
@@ -494,8 +527,8 @@ Each milestone is independently runnable/testable.
 | M1 | Project scaffold: uv init, pyproject, `events.py`, `config.py`, `devices` subcommand | `uv run earpiece devices` lists hardware |
 | M2 | Capture: mic + system audio → wav dump debug flag | both channels record; mic stays shared |
 | M3 | STT: Deepgram engine, dual websocket, live transcript in console | real-time ME/THEM transcript |
-| M4 | Brain (text-only): transcript store, prompts, responder streaming into console; `--eager` | mission-driven streamed answers |
-| M5 | Watcher + interruption: decisions, cancellation path, history markers | natural turn-taking, §6.2 works |
+| M4 | Brain (text-only): transcript store, prompts, responder streaming into console | mission-driven streamed answers |
+| M5 | Interruption: cancellation path, history markers (originally gated by a watcher model, since removed — every utterance now answers) | natural turn-taking, §6.2 works |
 | M6 | TTS: `say` engine, PlaybackQueue, barge-in VAD, feedback guards | voice in earpiece, interruptible |
 | M7 | Polish: hotkeys, status bar (incl. cached-token readout), reconnects, sliding window | usable end-to-end v1 |
 | P2a | Fully local mode: `whisper_api` STT against any `/audio/transcriptions` endpoint (vLLM/speaches) — **done** | no-cloud testing loop |
@@ -508,9 +541,10 @@ Each milestone is independently runnable/testable.
 1. **Unit (no audio hardware, no API):** `tests/fakes.py` provides scripted `FakeSTT` /
    `FakeLLM` / `FakeTTS`. Assertions:
    - transcript tagging + interim/final merging (`test_transcript.py`),
-   - watcher JSON parsing incl. fallback + fail-safe-to-silent (`test_watcher.py`),
    - `interrupt_and_respond` cancels the stream task, flushes TTS, writes the interrupted
-     marker, and starts exactly one new answer (`test_interruption.py`),
+     marker, and starts exactly one new answer; chat-bar messages are forwarded verbatim
+     (`test_interruption.py`),
+   - tool-call timeline keyed by `toolCallId`, chat echo (`test_console.py`),
    - config precedence env < flag (`test_config.py`).
 2. **Live smoke test:** play a YouTube interview (system audio) while speaking into the mic;
    `uv run earpiece "help me with tech trivia"`; confirm dual-channel ME/THEM transcript,
@@ -532,7 +566,8 @@ Each milestone is independently runnable/testable.
 - **BlackHole setup friction** is the worst onboarding step; macOS 14.2+ Core Audio process taps
   could remove it later (native loopback) — out of scope for v1, noted as a future replacement
   for `SystemAudioCapture`.
-- **Watcher cost/latency on chatty calls**: one cheap call per utterance; coalescing + eager
-  mode are the levers.
+- **Answering every utterance is chatty/costly** in a two-party call: every finalized line is
+  a full harness turn. Coalescing during an in-flight turn and the chat bar (drive it
+  deliberately) are the levers; solo/trivia use is the sweet spot.
 - **Ethics/consent**: recording calls may require consent depending on jurisdiction — README
   gets a prominent note; this tool is for the operator's own conversations.
