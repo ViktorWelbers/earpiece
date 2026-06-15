@@ -81,10 +81,9 @@ new utterance is evaluated against the partial answer in flight — if one is st
 it's cancelled over the protocol, unspoken TTS is dropped, the history gets an `[interrupted]`
 marker, and a fresh turn starts on the latest line.
 
-The transcript is kept append-only with a frozen system prompt, so provider-side prefix
-caching works; long sessions are compacted by summarizing the oldest half with a small
-utility model (the only thing the `LLM_*` keys power — the answers themselves come from the
-harness). Full design doc: [AGENTS.md](AGENTS.md).
+The harness keeps the conversation context in its own session; each turn earpiece forwards
+only the transcript lines since the previous one, so it needs no model client of its own.
+Full design doc: [AGENTS.md](AGENTS.md).
 
 ## Setup
 
@@ -128,10 +127,9 @@ mic channel works.
 earpiece configure
 ```
 
-An interactive wizard: the agent harness command, the utility LLM endpoint + key (models
-are auto-discovered from `/v1/models` when reachable), TLS verification, and the STT
-engine. Answers are stored in `~/.config/earpiece/config.toml`. Running `earpiece run`
-without any configuration offers the wizard automatically.
+An interactive wizard: the agent harness command and the STT engine. Answers are stored in
+`~/.config/earpiece/config.toml`. Running `earpiece run` without any configuration offers
+the wizard automatically.
 
 The file uses the same names as the environment variables, and **env vars override the
 file**, so one-off overrides stay easy:
@@ -139,10 +137,6 @@ file**, so one-off overrides stay easy:
 ```toml
 # ~/.config/earpiece/config.toml
 AGENT_CMD = "opencode acp"             # the ACP harness that answers (and acts)
-LLM_BASE_URL = "https://my-vllm-host/v1"
-LLM_API_KEY = "local"
-LLM_RESPONDER_MODEL = "my-model"       # the transcript summarizer (NOT the answer model)
-LLM_VERIFY_TLS = false                 # self-signed certs
 EARPIECE_STT = "whisper"
 STT_BASE_URL = "http://localhost:8001/v1"
 STT_MODEL = "Systran/faster-whisper-small"
@@ -157,20 +151,17 @@ JIRA_PERSONAL_TOKEN = "..."
 ```
 
 The harness must be set up on its own once and supplies the model that actually answers —
-earpiece just spawns `AGENT_CMD` and speaks ACP to it. The `LLM_*` keys do **not** choose
-the answer model; they only power the small utility model that summarizes the transcript on
-long sessions.
+earpiece just spawns `AGENT_CMD` and speaks ACP to it. earpiece itself needs **no LLM
+config**: the only model in the loop lives inside the harness.
 
 Optional keys: `AGENT_CWD` to pin the harness's working directory,
 `AGENT_AUTO_TOOLS = "jira_search*,lookup_*"` (comma-separated globs) to let specific
-non-read-only tools run without confirmation, `LLM_WATCHER_BASE_URL` /
-`LLM_WATCHER_API_KEY` / `LLM_WATCHER_MODEL` to put the utility model on a different
-provider/model, `DEEPGRAM_API_KEY` for `--stt deepgram`, `STT_API_KEY` for hosted whisper
-endpoints, and `EARPIECE_MIC_DEVICE` / `EARPIECE_SYSTEM_DEVICE` / `EARPIECE_OUTPUT_DEVICE`
-to pin audio devices (index or name substring; the matching CLI flags override).
-`EARPIECE_CONFIG=/path/to/file.toml` relocates the config file.
-`earpiece configure show` prints the effective configuration and where each value
-comes from.
+non-read-only tools run without confirmation, `DEEPGRAM_API_KEY` for `--stt deepgram`,
+`STT_API_KEY` for hosted whisper endpoints, and `EARPIECE_MIC_DEVICE` /
+`EARPIECE_SYSTEM_DEVICE` / `EARPIECE_OUTPUT_DEVICE` to pin audio devices (index or name
+substring; the matching CLI flags override). `EARPIECE_CONFIG=/path/to/file.toml` relocates
+the config file. `earpiece configure show` prints the effective configuration and where
+each value comes from.
 
 ### Choosing an agent harness
 
@@ -210,16 +201,14 @@ fails fast at startup with `agent harness error: …` rather than on the first a
 > Harness commands and adapter package names evolve — check each project's ACP docs for the
 > current invocation. `opencode acp` is the configuration this project is tested against.
 
-## Fully local mode
+## Local STT (whisper in Docker)
 
-No cloud STT, no cloud model: whisper runs in a local Docker container
-([speaches](https://speaches.ai), CPU image, OpenAI-compatible `/v1/audio/transcriptions`
-on `localhost:8001`), the utility/summarizer model points at your own vLLM/Ollama server,
-and the agent harness is one configured against a local OpenAI-compatible provider (e.g.
-[opencode](https://opencode.ai) or [pi](https://github.com/earendil-works/pi) with a custom
-provider entry for your local endpoint). Note: tool calling requires the local server to
-parse tool calls — for vLLM that means starting it with
-`--enable-auto-tool-choice --tool-call-parser <parser>`.
+The only service earpiece talks to directly is speech-to-text. To keep it off the cloud,
+run whisper in a local Docker container ([speaches](https://speaches.ai), CPU image,
+OpenAI-compatible `/v1/audio/transcriptions` on `localhost:8001`) and point `STT_*` at it.
+For a fully offline setup, also configure your agent harness against a local model — but
+that (and any tool-calling requirements of the local server) is the harness's concern, not
+earpiece's.
 
 ```sh
 # needs Docker Desktop / OrbStack running; reads ~/.config/earpiece/config.toml

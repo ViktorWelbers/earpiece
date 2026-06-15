@@ -45,11 +45,11 @@ else is plumbing.
 | Stack | Python, asyncio pipeline, `uv`-managed project |
 | Answers/agency | **Forwarded to an external ACP agent harness** (`AGENT_CMD`: `opencode acp`, `npx @zed-industries/claude-code-acp`, `gemini --experimental-acp`, `npx pi-acp`, …) spawned as a subprocess speaking the [Agent Client Protocol](https://agentclientprotocol.com) over stdio. The harness owns the responder model endpoint, the tools, and the conversation context. earpiece stays an audio frontend. |
 | Turn-taking | **No watcher model.** Every finalized utterance (either channel) triggers an answer turn; a newer utterance interrupts the in-flight one. The operator can also drive turns from the chat bar (type → message to the agent; empty enter → answer now). |
-| Utility LLM | **No hard provider dependency.** OpenAI-compatible chat-completions client (`openai` SDK + configurable `base_url`). Works with OpenAI, Anthropic compat endpoint, OpenRouter, Groq, Ollama, vLLM. Used **only** for transcript compaction (summarizing the oldest half of a long session). |
+| Direct LLM | **None.** earpiece keeps no model client of its own — the harness owns the only model in the loop. (Earlier versions used an OpenAI-compatible client for the watcher + transcript compaction; both were removed.) |
 | Tool safety | Reads auto, writes confirm: ACP permission requests with a read-only kind (read/search/fetch/think) or an `AGENT_AUTO_TOOLS` glob match are auto-approved; everything else waits for the operator's y/n hotkey (30 s timeout ⇒ denied). |
 | Output | Live text (terminal first, overlay later) **and** optional voice (TTS), both interruptible |
 | STT | Pluggable engine interface. Deepgram cloud streaming, plus `whisper` via any OpenAI-compatible `/audio/transcriptions` endpoint (vLLM, speaches, OpenAI) — nothing baked into the binary |
-| Phasing | Phase 1 = audio-only core loop. Phase 2a = fully local mode (whisper API + local LLM endpoint). Phase 2b = screen capture, ElevenLabs, overlay window |
+| Phasing | Phase 1 = audio-only core loop. Phase 2a = fully local mode (whisper API + a harness on a local model). Phase 2b = screen capture, ElevenLabs, overlay window |
 | Mic access | **Must not block the mic for other apps** (shared-mode capture), and every device is selectable so a two-mic setup works |
 
 ---
@@ -92,7 +92,8 @@ timeline actions, and raises `session/request_permission` for gated tools.
 > speak per utterance (`stay_silent`/`respond`/`interrupt_and_respond`), with an `--eager`
 > flag to bypass it. That was dropped — eager-on-both-channels is the only behavior now — so
 > the watcher, its prompt, and the `--eager`/`--eager-source` flags no longer exist. The
-> OpenAI-compatible LLM handle survives only as the transcript summarizer (§4.7).
+> OpenAI-compatible LLM client (`llm.py`) and the transcript compaction it powered were
+> removed too: earpiece now has **no direct model client**, only the ACP harness.
 
 ### 2.1b Tool confirmation (reads auto, writes confirm)
 
@@ -152,7 +153,6 @@ earpiece/
     __init__.py
     cli.py                       # arg parsing, device validation, hotkeys, wiring
     config.py                    # Settings: env + flags → typed config object
-    llm.py                       # LLMClient: openai SDK against any OpenAI-compatible base_url
     events.py                    # frozen dataclasses passed between stages
     orchestrator.py              # asyncio task graph, queues, cancellation authority
     audio/
@@ -167,7 +167,7 @@ earpiece/
       whisper_api.py             # local VAD endpointing + OpenAI-compatible transcriptions API
     brain/
       __init__.py
-      transcript.py              # TranscriptStore + chat-messages builder + compaction
+      transcript.py              # TranscriptStore + chat-messages builder
       responder.py               # agent turns over ACP, chat-bar messages, interruption + gate
       acp.py                     # minimal ACP client (JSON-RPC over subprocess stdio)
       prompts.py                 # frozen system prompts (cache-safe), mission templating
@@ -183,7 +183,7 @@ earpiece/
       __init__.py
       capture.py                 # periodic screenshot, downscale, phash dedupe
   tests/
-    fakes.py                     # FakeSTT, FakeLLM, FakeTTS — fully scripted, no I/O
+    fakes.py                     # FakeACPAgent, FakeTTSSink, event helpers — scripted, no I/O
     test_transcript.py
     test_interruption.py
     test_config.py
@@ -249,11 +249,6 @@ A single `Settings` object resolved from env vars + CLI flags (flags win):
 | Agent workspace | `AGENT_CWD` | earpiece's cwd |
 | Auto-approved tools | `AGENT_AUTO_TOOLS` | empty (comma-separated fnmatch globs) |
 | MCP servers | `[mcp_servers.*]` config tables (file only) | none |
-| LLM base URL | `LLM_BASE_URL` | `https://api.openai.com/v1` |
-| LLM API key | `LLM_API_KEY` | — (required) |
-| Utility/summarizer model | `LLM_RESPONDER_MODEL` | — (required) |
-| Summarizer model override | `LLM_WATCHER_MODEL` | falls back to `LLM_RESPONDER_MODEL` |
-| Summarizer base URL/key | `LLM_WATCHER_BASE_URL` / `LLM_WATCHER_API_KEY` | falls back to main |
 | Deepgram key | `DEEPGRAM_API_KEY` | required when `--stt deepgram` |
 | Mic device | `--mic-device` | system default input |
 | System-audio device | `--system-device` | auto-detect "BlackHole" |
@@ -264,20 +259,11 @@ A single `Settings` object resolved from env vars + CLI flags (flags win):
 `earpiece devices` subcommand prints `sounddevice.query_devices()` in a table with indices and
 marks the auto-detected candidates.
 
-### 4.3 `llm.py` — provider-agnostic LLM client
+### 4.3 `llm.py` — removed
 
-Thin wrapper around `openai.AsyncOpenAI(base_url=…, api_key=…)`:
-
-- `stream_chat(messages) -> AsyncIterator[str]` — yields content deltas; raises
-  `asyncio.CancelledError` cleanly through (the stream's `close()` runs in a `finally`).
-- One handle is built at runtime — `Orchestrator.summarizer` (`LLMHandle(settings.watcher)`) —
-  used only for transcript compaction (§4.7). (`structured()` for JSON output still exists but
-  is unused — a leftover from the watcher.)
-
-**Cache-friendliness rule (provider-independent):** conversation prefix must be byte-stable —
-frozen system prompt, **no timestamps/UUIDs in the system prompt**, append-only history. That way
-OpenAI automatic prefix caching / Anthropic prompt caching / vLLM prefix cache all work without
-provider-specific code. Clock time lives only inside message *content* lines.
+earpiece no longer has a model client of its own. The provider-agnostic OpenAI-compatible
+client lived here to serve the watcher and transcript compaction; both are gone, so the
+module was deleted. The only model in the loop is the ACP harness's (§4.9).
 
 ### 4.4 `audio/capture.py`
 
@@ -330,18 +316,11 @@ class STTEngine(Protocol):
 - `TranscriptStore.add(event)` — merges interim/final events into utterances
   `(speaker, text, t_start, t_end)`; interim events only update the live console.
 - The ACP responder consumes `drain_pending_block()` — only the lines since the previous
-  turn (the harness session holds the rest). `as_messages()` below builds a full local mirror
-  used only by compaction; it is **not** sent to the harness.
-- `as_messages()` — builds the chat history:
-  - one frozen system message (persona + mission + output-style rules),
-  - transcript deltas as user messages, each line `"[hh:mm:ss] THEM: …"`,
-  - prior assistant answers as assistant messages
-    (interrupted ones suffixed `"[interrupted — conversation moved on]"`).
-  - **Append-only.** New utterances since the last call become one new user message; history is
-    never rewritten (keeps provider-side prefix caches valid).
-- **Sliding window:** beyond ~60 K tokens (estimated `len/4`), summarize the oldest half via the
-  summarizer model into a single `"[earlier conversation summary] …"` user message. (In the
-  ACP design this only trims the local mirror; the harness manages its own context window.)
+  turn (the harness session holds the rest, including its own context-window management).
+- `as_messages()` / `recent_lines()` build a local mirror of the conversation (system prompt
+  + append-only user/assistant entries). Nothing sends it to a model anymore — it's retained
+  as an in-process record (and for tests). There is no transcript compaction: the harness
+  owns the real context window, so earpiece never summarizes or rewrites history.
 
 ### 4.8 `brain/watcher.py` — removed
 
@@ -367,8 +346,8 @@ status-bar carrier the orchestrator fills in directly.
   harness `toolCallId` so repeated calls to one tool stay distinct.
 - Interruption: cancelling the turn task sends `session/cancel`, commits the partial answer
   with the interrupted marker, and resolves any pending permission gate as `cancelled`.
-- Owns answer bookkeeping: on natural end append the full answer as an assistant message
-  (the local history still feeds compaction).
+- Owns answer bookkeeping: on natural end append the full answer to the local history mirror
+  (kept for the record/tests; the harness session is the source of truth).
 - The harness is spawned at orchestrator startup (`start_agent()`) so a broken `AGENT_CMD`
   is one clear error before audio starts, with a lazy fallback on first turn.
 - Style is enforced by the instructions prompt (§4.11): 1–3 sentences for spoken cues; tool
@@ -538,8 +517,8 @@ Each milestone is independently runnable/testable.
 
 ## 8. Verification
 
-1. **Unit (no audio hardware, no API):** `tests/fakes.py` provides scripted `FakeSTT` /
-   `FakeLLM` / `FakeTTS`. Assertions:
+1. **Unit (no audio hardware, no API):** `tests/fakes.py` provides a scripted `FakeACPAgent`
+   and `FakeTTSSink`. Assertions:
    - transcript tagging + interim/final merging (`test_transcript.py`),
    - `interrupt_and_respond` cancels the stream task, flushes TTS, writes the interrupted
      marker, and starts exactly one new answer; chat-bar messages are forwarded verbatim

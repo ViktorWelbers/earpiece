@@ -26,7 +26,6 @@ from .brain.responder import Responder
 from .brain.transcript import TranscriptStore
 from .config import Settings
 from .events import Action, AudioChunk, Decision, TranscriptEvent
-from .llm import LLMHandle
 from .output.console import ConsoleView, StatusState
 from .output.tts import base as tts_base
 from .output.tts import macos_say  # noqa: F401 — registers the engine
@@ -42,12 +41,9 @@ _STALE_INTERIM_SECS = 6.0
 class Orchestrator:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        # only the responder (the ACP agent) talks to a model now; this plain
-        # OpenAI-compatible handle is kept solely to summarize a long transcript
-        self.summarizer = LLMHandle(settings.watcher)
-        self.transcript = TranscriptStore(
-            mission=settings.mission, max_context_tokens=settings.max_context_tokens
-        )
+        # the responder (the ACP agent harness) is the only thing that talks to a
+        # model; earpiece keeps no LLM client of its own
+        self.transcript = TranscriptStore(mission=settings.mission)
         self.console = ConsoleView(self.transcript, StatusState())
 
         # audio plumbing
@@ -259,9 +255,6 @@ class Orchestrator:
                 case Action.INTERRUPT_AND_RESPOND:
                     await self._interrupt_current()
                     await self._start_answer()
-
-            if self.transcript.needs_compaction():
-                await self.transcript.compact(self.summarizer)
 
     async def _next_brain_event(self) -> TranscriptEvent | None:
         """Wait for a transcript event OR the push-to-ask hotkey."""

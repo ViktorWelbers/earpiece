@@ -3,8 +3,8 @@
 JSON-RPC 2.0, one LF-delimited JSON object per line — only the slice of the
 protocol earpiece needs: `initialize`, `session/new`, `session/prompt`,
 `session/cancel`, incoming `session/update` notifications and
-`session/request_permission` requests. The harness (pi, claude-agent-acp,
-gemini --experimental-acp, ...) owns the model endpoint, the tools, and the
+`session/request_permission` requests. The harness (opencode, claude-code-acp,
+pi, gemini --experimental-acp, ...) owns the model endpoint, the tools, and the
 conversation context.
 
 Spec: https://agentclientprotocol.com

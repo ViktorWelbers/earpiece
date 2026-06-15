@@ -1,7 +1,7 @@
 """Agentic responder: each answer turn is forwarded to an ACP agent harness.
 
 earpiece stays an audio frontend — capture, STT, TTS, UI. The harness
-(pi, claude-agent-acp, gemini --experimental-acp, ...) owns the model endpoint,
+(opencode, claude-code-acp, pi, ...) owns the model endpoint,
 the tools (its own + the MCP servers from our config), and the conversation
 context. Streamed text lands in the same on_delta/TTS path as before; tool
 calls surface as actions, and permission requests pass through the operator's

@@ -69,14 +69,6 @@ _KNOWN_KEYS = (
     "AGENT_CMD",
     "AGENT_CWD",
     "AGENT_AUTO_TOOLS",
-    "LLM_BASE_URL",
-    "LLM_API_KEY",
-    "LLM_RESPONDER_MODEL",
-    "LLM_WATCHER_MODEL",
-    "LLM_WATCHER_BASE_URL",
-    "LLM_WATCHER_API_KEY",
-    "LLM_VERIFY_TLS",
-    "LLM_JSON_SCHEMA",
     "EARPIECE_STT",
     "EARPIECE_MIC_DEVICE",
     "EARPIECE_SYSTEM_DEVICE",
@@ -149,34 +141,9 @@ def _wizard() -> None:
         " the harness brings its own model + tool configuration"
     )
     values["AGENT_CMD"] = typer.prompt(
-        'Agent command ("npx pi-acp" | "npx claude-agent-acp" | "gemini --experimental-acp")',
-        default=os.environ.get("AGENT_CMD", "npx pi-acp"),
-    )
-
-    console.print(
-        "\n[bold]utility model[/bold] — a small OpenAI-compatible model used only to summarize"
-        " long transcripts (the responder itself is the ACP agent harness above)"
-    )
-    values["LLM_BASE_URL"] = typer.prompt(
-        "Utility LLM base URL (any OpenAI-compatible endpoint)",
-        default=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
-    )
-    values["LLM_API_KEY"] = typer.prompt(
-        "LLM API key ('local' works for most self-hosted servers)",
-        default=os.environ.get("LLM_API_KEY", "local"),
-    )
-    values["LLM_VERIFY_TLS"] = typer.confirm(
-        "Verify TLS certificates? (answer n for self-signed certs)", default=True
-    )
-
-    models = _discover_models(
-        values["LLM_BASE_URL"], values["LLM_API_KEY"], values["LLM_VERIFY_TLS"]
-    )
-    if models:
-        console.print(f"[dim]models on this endpoint: {', '.join(models[:10])}[/dim]")
-    values["LLM_RESPONDER_MODEL"] = typer.prompt(
-        "Utility model (small/cheap — summarizes the transcript on long sessions)",
-        default=models[0] if models else None,
+        'Agent command ("opencode acp" | "npx @zed-industries/claude-code-acp" | '
+        '"gemini --experimental-acp" | "npx pi-acp")',
+        default=os.environ.get("AGENT_CMD", "opencode acp"),
     )
 
     stt = ""
@@ -203,23 +170,6 @@ def _wizard() -> None:
         "args = [\"mcp-atlassian\"][/dim]"
     )
     console.print('try it:  [bold]earpiece run "help me with tech trivia"[/bold]')
-
-
-def _discover_models(base_url: str, api_key: str, verify: bool) -> list[str]:
-    """Best-effort model listing for wizard defaults; empty on any failure."""
-    import httpx
-
-    try:
-        resp = httpx.get(
-            f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            verify=verify,
-            timeout=5.0,
-        )
-        resp.raise_for_status()
-        return [m["id"] for m in resp.json().get("data", [])]
-    except Exception:  # noqa: BLE001 — discovery is a convenience, never fatal
-        return []
 
 
 @app.command()
@@ -289,8 +239,8 @@ async def _main(settings: Settings) -> None:
         err_console.print(f"[red]agent harness error:[/red] {exc}")
         err_console.print(
             "[dim]check AGENT_CMD (earpiece configure show) and that the harness is "
-            "installed and configured — e.g. `npx pi-acp` needs pi set up with a "
-            "provider/model.[/dim]"
+            "installed and configured — e.g. `opencode acp` needs opencode set up with "
+            "a model/provider.[/dim]"
         )
         raise typer.Exit(1) from None
     finally:

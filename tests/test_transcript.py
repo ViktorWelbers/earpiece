@@ -1,4 +1,4 @@
-from fakes import FakeWatcherHandle, final, interim
+from fakes import final, interim
 
 from earpiece.brain.transcript import TranscriptStore
 
@@ -59,18 +59,3 @@ def test_speaker_tagging_in_lines():
     lines = store.recent_lines()
     assert "ME: I think it was 1950." in lines
     assert "THEM: Close!" in lines
-
-
-async def test_compaction_summarizes_oldest_half():
-    store = make_store()
-    store.max_context_tokens = 1  # force
-    for i in range(8):
-        store.add(final("THEM", f"utterance number {i} with some padding text"))
-        store.as_messages()
-        store.add_answer(f"answer {i}", interrupted=False)
-    assert store.needs_compaction()
-    before = len(store._history)
-    await store.compact(FakeWatcherHandle([]))
-    after = len(store._history)
-    assert after < before
-    assert store._history[0].content.startswith("[earlier conversation summary]")

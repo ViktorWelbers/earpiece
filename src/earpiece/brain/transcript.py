@@ -2,9 +2,7 @@
 
 Append-only invariant: `as_messages()` never rewrites earlier messages — new
 utterances since the last call are folded into ONE new user message, so any
-provider-side prefix cache (OpenAI automatic, Anthropic, vLLM) stays valid.
-The only intentional rewrite is the sliding-window summarization, which resets
-the cache prefix at most once per long session.
+provider-side prefix cache stays valid.
 """
 
 from __future__ import annotations
@@ -14,10 +12,11 @@ import time
 from dataclasses import dataclass, field
 
 from ..events import Speaker, TranscriptEvent
-from ..llm import LLMHandle, Message
 from .prompts import responder_system
 
 log = logging.getLogger(__name__)
+
+Message = dict  # {"role": ..., "content": ...} — OpenAI chat shape
 
 
 @dataclass
@@ -39,7 +38,6 @@ class _HistoryEntry:
 @dataclass
 class TranscriptStore:
     mission: str
-    max_context_tokens: int = 60_000
     utterances: list[Utterance] = field(default_factory=list)
     # committed chat history (frozen prefix); pending utterances not yet committed
     _history: list[_HistoryEntry] = field(default_factory=list)
@@ -113,42 +111,3 @@ class TranscriptStore:
 
     def recent_lines(self, n: int = 15) -> str:
         return "\n".join(u.line() for u in self.utterances[-n:])
-
-    # ---- sliding window ------------------------------------------------
-
-    def estimated_tokens(self) -> int:
-        return sum(len(e.content) for e in self._history) // 4
-
-    def needs_compaction(self) -> bool:
-        return self.estimated_tokens() > self.max_context_tokens
-
-    async def compact(self, summarizer: LLMHandle) -> str | None:
-        """Summarize the oldest half of history into one context block.
-
-        Returns the summary so the responder can reseed its agent session."""
-        if len(self._history) < 4:
-            return None
-        half = len(self._history) // 2
-        old, keep = self._history[:half], self._history[half:]
-        digest = "\n\n".join(f"{e.role.upper()}:\n{e.content}" for e in old)
-        summary = ""
-        async for delta in summarizer.stream_chat(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Summarize this conversation transcript segment into a dense brief "
-                        "for an assistant that will keep following the live conversation. "
-                        "Keep names, numbers, commitments, open questions."
-                    ),
-                },
-                {"role": "user", "content": digest},
-            ]
-        ):
-            summary += delta
-        self._history = [
-            _HistoryEntry("user", f"[earlier conversation summary]\n{summary}"),
-            *keep,
-        ]
-        log.info("compacted history: %d -> %d entries", half + len(keep), len(self._history))
-        return summary

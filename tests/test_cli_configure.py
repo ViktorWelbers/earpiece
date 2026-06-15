@@ -17,11 +17,6 @@ def isolated_config(monkeypatch, tmp_path):
         "AGENT_CMD",
         "AGENT_CWD",
         "AGENT_AUTO_TOOLS",
-        "LLM_BASE_URL",
-        "LLM_API_KEY",
-        "LLM_RESPONDER_MODEL",
-        "LLM_WATCHER_MODEL",
-        "LLM_VERIFY_TLS",
         "EARPIECE_STT",
         "STT_BASE_URL",
         "STT_MODEL",
@@ -32,14 +27,9 @@ def isolated_config(monkeypatch, tmp_path):
 
 
 def test_configure_whisper_writes_usable_config(isolated_config):
-    # model discovery hits a closed local port and falls back to manual entry
     answers = "\n".join(
         [
             "my-agent --acp",  # ACP harness command
-            "http://localhost:1/v1",  # watcher base URL (unreachable — discovery skipped)
-            "local",  # API key
-            "n",  # verify TLS
-            "my-watcher",  # watcher model (no discovered default)
             "whisper",  # STT engine
             "",  # whisper endpoint (default)
             "",  # whisper model (default)
@@ -51,9 +41,6 @@ def test_configure_whisper_writes_usable_config(isolated_config):
 
     s = Settings.from_env("mission")
     assert s.agent_cmd == "my-agent --acp"
-    assert s.responder.base_url == "http://localhost:1/v1"
-    assert s.responder.verify_tls is False
-    assert s.watcher.model == "my-watcher"
     assert s.stt_engine == "whisper"
     assert s.stt_base_url == "http://localhost:8001/v1"
     assert s.stt_model == "Systran/faster-whisper-small"
@@ -63,22 +50,17 @@ def test_configure_deepgram_asks_for_key(isolated_config):
     answers = "\n".join(
         [
             "",  # agent command (default)
-            "http://localhost:1/v1",  # unreachable — keeps the test offline
-            "sk-test",
-            "y",
-            "gpt-4.1-mini",
-            "deepgram",
-            "dg-key",
+            "deepgram",  # STT engine
+            "dg-key",  # deepgram key
         ]
     )
     result = runner.invoke(app, ["configure"], input=answers + "\n")
     assert result.exit_code == 0, result.output
 
     s = Settings.from_env("mission")
-    assert s.agent_cmd == "npx pi-acp"  # wizard default
+    assert s.agent_cmd == "opencode acp"  # wizard default
     assert s.stt_engine == "deepgram"
     assert s.deepgram_api_key == "dg-key"
-    assert s.watcher.model == "gpt-4.1-mini"
 
 
 def test_configure_show_prints_values_and_sources(isolated_config, monkeypatch):

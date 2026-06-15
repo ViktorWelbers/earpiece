@@ -7,14 +7,11 @@ from fakes import FakeACPAgent, FakeTTSSink, final
 
 from earpiece.brain.responder import Responder
 from earpiece.brain.transcript import TranscriptStore
-from earpiece.config import LLMSlot, Settings
+from earpiece.config import Settings
 
 
 def make_settings(**overrides) -> Settings:
-    slot = LLMSlot(base_url="http://localhost:1/v1", api_key="k", model="m")
-    return Settings(
-        mission="m", responder=slot, watcher=slot, agent_cmd="fake --acp", **overrides
-    )
+    return Settings(mission="m", agent_cmd="fake --acp", **overrides)
 
 
 def make_responder(

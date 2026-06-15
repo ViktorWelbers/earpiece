@@ -7,13 +7,12 @@ parser must concatenate, or earlier segments silently disappear.
 
 import json
 
-from earpiece.config import LLMSlot, Settings
+from earpiece.config import Settings
 from earpiece.stt.deepgram import DeepgramSTT
 
 
 def make_engine() -> DeepgramSTT:
-    slot = LLMSlot(base_url="x", api_key="x", model="x")
-    settings = Settings(mission="m", responder=slot, watcher=slot, deepgram_api_key="dg")
+    settings = Settings(mission="m", agent_cmd="fake --acp", deepgram_api_key="dg")
     return DeepgramSTT(settings, "THEM")
 
 

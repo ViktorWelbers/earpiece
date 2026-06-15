@@ -88,28 +88,9 @@ def save_config(
     return path
 
 
-def _as_bool(raw: str | None, default: bool) -> bool:
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
-@dataclass(frozen=True)
-class LLMSlot:
-    """One configured model endpoint (responder or watcher)."""
-
-    base_url: str
-    api_key: str
-    model: str
-    supports_json_schema: bool = True
-    verify_tls: bool = True  # LLM_VERIFY_TLS=false for self-signed internal endpoints
-
-
 @dataclass(frozen=True)
 class Settings:
     mission: str
-    responder: LLMSlot
-    watcher: LLMSlot
     deepgram_api_key: str | None = None
     # devices: None = system default / auto-detect; int index or name substring otherwise
     mic_device: int | str | None = None
@@ -123,11 +104,9 @@ class Settings:
     stt_base_url: str | None = None
     stt_api_key: str = "local"
     stt_model: str | None = None
-    # transcript sliding window (approx tokens, estimated len/4)
-    max_context_tokens: int = 60_000
     debug_dump_wav: bool = False
     # the ACP agent harness that answers (and acts): a shell-ish command line,
-    # e.g. "npx pi-acp" | "npx claude-agent-acp" | "gemini --experimental-acp"
+    # e.g. "opencode acp" | "npx @zed-industries/claude-code-acp" | "npx pi-acp"
     agent_cmd: str | None = None
     agent_cwd: str | None = None  # workspace the harness operates in (default: cwd)
     # comma-separated fnmatch globs of tool names that run without confirmation
@@ -154,39 +133,12 @@ class Settings:
         def get(name: str, default: str | None = None) -> str | None:
             return os.environ.get(name, cfg.get(name, default))
 
-        base_url = get("LLM_BASE_URL", "https://api.openai.com/v1")
-        api_key = get("LLM_API_KEY", "")
-        responder_model = get("LLM_RESPONDER_MODEL", "")
-        if not api_key:
-            raise ConfigError("LLM_API_KEY is not set — run `earpiece configure` (or export it)")
-        if not responder_model:
-            raise ConfigError(
-                "LLM_RESPONDER_MODEL is not set — run `earpiece configure` (or export it)"
-            )
-        supports_schema = _as_bool(get("LLM_JSON_SCHEMA"), True)
-        verify_tls = _as_bool(get("LLM_VERIFY_TLS"), True)
-
-        responder = LLMSlot(
-            base_url=base_url,
-            api_key=api_key,
-            model=responder_model,
-            supports_json_schema=supports_schema,
-            verify_tls=verify_tls,
-        )
-        watcher = LLMSlot(
-            base_url=get("LLM_WATCHER_BASE_URL", base_url),
-            api_key=get("LLM_WATCHER_API_KEY", api_key),
-            model=get("LLM_WATCHER_MODEL", responder_model),
-            supports_json_schema=supports_schema,
-            verify_tls=verify_tls,
-        )
-
         agent_cmd = get("AGENT_CMD")
         if not agent_cmd:
             raise ConfigError(
                 "AGENT_CMD is not set — earpiece forwards answers to an ACP agent "
                 "harness. Run `earpiece configure` or set it to e.g. "
-                '"npx pi-acp" | "npx claude-agent-acp" | "gemini --experimental-acp"'
+                '"opencode acp" | "npx @zed-industries/claude-code-acp" | "npx pi-acp"'
             )
 
         stt = stt_engine or get("EARPIECE_STT", "deepgram")
@@ -204,8 +156,6 @@ class Settings:
 
         return Settings(
             mission=mission,
-            responder=responder,
-            watcher=watcher,
             deepgram_api_key=deepgram_key,
             stt_base_url=stt_base_url,
             stt_api_key=get("STT_API_KEY", "local"),

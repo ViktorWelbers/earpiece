@@ -20,8 +20,7 @@ SILENCE = np.zeros(BLOCK_SAMPLES, dtype=np.int16).tobytes()
 def make_engine() -> WhisperAPISTT:
     settings = Settings(
         mission="m",
-        responder=None,  # type: ignore[arg-type] — not used by the engine
-        watcher=None,  # type: ignore[arg-type]
+        agent_cmd="fake --acp",
         stt_base_url="http://localhost:8001/v1",
         stt_model="whisper-test",
     )

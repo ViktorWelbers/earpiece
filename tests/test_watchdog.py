@@ -5,7 +5,7 @@ import time
 from fakes import final
 
 from earpiece.brain.transcript import TranscriptStore
-from earpiece.config import LLMSlot, Settings
+from earpiece.config import Settings
 from earpiece.events import TranscriptEvent
 from earpiece.orchestrator import Orchestrator
 
@@ -15,11 +15,9 @@ def interim(speaker: str, text: str) -> TranscriptEvent:
 
 
 def make_orch() -> Orchestrator:
-    slot = LLMSlot(base_url="http://localhost:1/v1", api_key="k", model="m")
     settings = Settings(
         mission="m",
-        responder=slot,
-        watcher=slot,
+        agent_cmd="fake --acp",
         stt_engine="whisper",
         stt_base_url="http://localhost:1/v1",
         stt_model="w",
