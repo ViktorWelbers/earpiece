@@ -253,12 +253,27 @@ async def _main(settings: Settings) -> None:
 # bytes are decoded so they never land in the chat buffer.
 _ESC_SEQ = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1bO.|\x1b")
 
+# Scrollback navigation keys → (method name, step). Matched against the escape
+# sequences above before they're stripped; PgUp/PgDn page, arrows nudge.
+_SCROLL_PAGE = 10
+_NAV_KEYS: dict[bytes, tuple[str, int]] = {
+    b"\x1b[5~": ("scroll_up", _SCROLL_PAGE),   # PageUp
+    b"\x1b[6~": ("scroll_down", _SCROLL_PAGE),  # PageDown
+    b"\x1b[A": ("scroll_up", 1), b"\x1bOA": ("scroll_up", 1),       # ↑
+    b"\x1b[B": ("scroll_down", 1), b"\x1bOB": ("scroll_down", 1),   # ↓
+    b"\x1b[H": ("scroll_to_top", 0), b"\x1b[1~": ("scroll_to_top", 0),
+    b"\x1bOH": ("scroll_to_top", 0),
+    b"\x1b[F": ("scroll_to_bottom", 0), b"\x1b[4~": ("scroll_to_bottom", 0),
+    b"\x1bOF": ("scroll_to_bottom", 0),
+}
+
 
 async def _hotkey_loop(orch) -> None:
     """Always-on chat composer over the raw tty: every key types into the bar,
     enter sends the message straight to the ACP agent (an empty line is
-    push-to-ask), backspace edits. Slash commands run actions instead of
-    sending: /quit (or /q), /mute, /voice. While a tool call is awaiting
+    push-to-ask), backspace edits. PgUp/PgDn (and ↑/↓, Home/End) scroll the
+    history; submitting snaps back to live. Slash commands run actions instead
+    of sending: /quit (or /q), /mute, /voice. While a tool call is awaiting
     confirmation, y/n approve/deny it (the modal case wins over composing)."""
     loop = asyncio.get_running_loop()
     fd = sys.stdin.fileno()
@@ -274,6 +289,12 @@ async def _hotkey_loop(orch) -> None:
             data = await loop.run_in_executor(None, os.read, fd, 256)
             if not data:  # EOF on stdin
                 return
+            for seq in _ESC_SEQ.findall(data):  # scrollback keys (before they're stripped)
+                nav = _NAV_KEYS.get(seq)
+                if nav is not None:
+                    method, step = nav
+                    fn = getattr(orch.console, method)
+                    fn(step) if step else fn()
             for ch in decoder.decode(_ESC_SEQ.sub(b"", data)):
                 # A pending tool call is modal: y/n resolve it, nothing else.
                 if orch.console.status.pending_action and ch in ("y", "n"):
@@ -282,6 +303,7 @@ async def _hotkey_loop(orch) -> None:
                 if ch in ("\r", "\n"):  # submit
                     text, buffer = buffer.strip(), ""
                     orch.console.set_input("")
+                    orch.console.scroll_to_bottom()  # snap back to live on submit
                     if _dispatch_command(orch, text):
                         if text in ("/quit", "/q"):
                             return

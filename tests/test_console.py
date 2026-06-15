@@ -1,3 +1,5 @@
+from rich.text import Text
+
 from earpiece.brain.transcript import TranscriptStore
 from earpiece.output.console import ActionEntry, ConsoleView
 
@@ -78,6 +80,24 @@ def test_turn_end_clears_stale_pending_banner():
     view.on_action("t1", "create_ticket", {}, "pending")
     view.on_end("a1", True)  # interrupted turn — confirmation is moot
     assert view.status.pending_action == ""
+
+
+def test_window_shows_bottom_and_scrolls_up():
+    lines = [Text(str(i)) for i in range(10)]
+    assert [t.plain for t in ConsoleView._window(lines, 3, 0)] == ["7", "8", "9"]  # live bottom
+    assert [t.plain for t in ConsoleView._window(lines, 3, 2)] == ["5", "6", "7"]  # scrolled up 2
+    assert [t.plain for t in ConsoleView._window(lines, 3, 99)] == ["0", "1", "2"]  # clamp at top
+    assert ConsoleView._window(lines, 20, 5) == lines  # fits entirely → no windowing
+
+
+def test_scroll_state_clamps_and_returns_to_live():
+    view = make_view()
+    view.scroll_down(5)  # already at bottom
+    assert view.scroll == 0
+    view.scroll_up(3)
+    assert view.scroll == 3
+    view.scroll_to_bottom()
+    assert view.scroll == 0
 
 
 def test_chat_message_appears_in_timeline_before_the_reply():

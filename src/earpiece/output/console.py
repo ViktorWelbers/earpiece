@@ -76,12 +76,15 @@ class ConsoleView:
     answers: list[AnswerEntry | ActionEntry | ChatEntry] = field(default_factory=list)
     answer_text: str = ""  # the one in-flight (streaming) answer
     input_buffer: str = ""  # the always-on chat composer
+    scroll: int = 0  # display lines scrolled up from the live bottom (0 = follow)
+    _console: Console | None = None
     _live: Live | None = None
 
     def start(self) -> None:
+        self._console = Console()
         self._live = Live(
             self._render(),
-            console=Console(),
+            console=self._console,
             refresh_per_second=10,
             screen=True,
         )
@@ -95,6 +98,43 @@ class ConsoleView:
     def refresh(self) -> None:
         if self._live is not None:
             self._live.update(self._render())
+
+    # -- scrollback -------------------------------------------------------
+
+    def scroll_up(self, n: int = 1) -> None:
+        # upper bound is loose; _window clamps the actual view to the content top
+        cap = len(self.transcript.utterances) + len(self.answers) + 50
+        self.scroll = min(cap, self.scroll + n)
+        self.refresh()
+
+    def scroll_down(self, n: int = 1) -> None:
+        self.scroll = max(0, self.scroll - n)
+        self.refresh()
+
+    def scroll_to_top(self) -> None:
+        self.scroll_up(len(self.transcript.utterances) + len(self.answers) + 50)
+
+    def scroll_to_bottom(self) -> None:
+        self.scroll = 0
+        self.refresh()
+
+    def _pane_height(self) -> int:
+        """Interior rows of a main pane: total − input(3) − status(4) − borders(2)."""
+        height = self._console.size.height if self._console is not None else 24
+        return max(3, height - 3 - 4 - 2)
+
+    @staticmethod
+    def _window(lines: list[Text], height: int, scroll: int) -> list[Text]:
+        """The visible slice of `lines`: the bottom `height`, shifted up by `scroll`."""
+        if len(lines) <= height:
+            return lines
+        end = max(height, min(len(lines) - scroll, len(lines)))
+        return lines[end - height : end]
+
+    def _scroll_hint(self, total: int) -> str:
+        if self.scroll > 0 and total > self._pane_height():
+            return "  [dim]↑ scrolled · End=live[/dim]"
+        return ""
 
     # -- answer pane callbacks (wired to Responder) ----------------------
 
@@ -170,7 +210,7 @@ class ConsoleView:
 
     def _transcript_panel(self) -> Panel:
         lines: list[Text] = []
-        for utt in self.transcript.utterances[-30:]:
+        for utt in self.transcript.utterances:
             text = Text()
             text.append(f"[{utt.wall_time}] ", style="dim")
             text.append(f"{utt.speaker}: ", style=_SPEAKER_STYLE[utt.speaker])
@@ -181,12 +221,13 @@ class ConsoleView:
             text.append("▌ ", style="dim")
             text.append(f"{speaker}: {interim}", style="dim italic")
             lines.append(text)
-        return Panel(Group(*lines) if lines else Text("listening…", style="dim"),
-                     title="transcript", border_style="blue")
+        visible = self._window(lines, self._pane_height(), self.scroll)
+        return Panel(Group(*visible) if visible else Text("listening…", style="dim"),
+                     title=f"transcript{self._scroll_hint(len(lines))}", border_style="blue")
 
     def _answer_panel(self) -> Panel:
         blocks: list[Text] = []
-        for entry in self.answers[-8:]:
+        for entry in self.answers:
             if isinstance(entry, ActionEntry):
                 line = Text()
                 line.append(f"[{entry.wall_time}] ", style="dim")
@@ -217,8 +258,9 @@ class ConsoleView:
             blocks.append(live)
         elif blocks and not blocks[-1].plain:
             blocks.pop()  # drop trailing spacer
-        body = Group(*blocks) if blocks else Text("—", style="dim")
-        return Panel(body, title="answers", border_style="green")
+        visible = self._window(blocks, self._pane_height(), self.scroll)
+        body = Group(*visible) if visible else Text("—", style="dim")
+        return Panel(body, title=f"answers{self._scroll_hint(len(blocks))}", border_style="green")
 
     def _status_panel(self) -> Panel:
         s = self.status
@@ -240,7 +282,8 @@ class ConsoleView:
             line2 = f"[dim]{s.notice or s.decision_reason}[/dim]"  # errors win over decisions
         line3 = (
             f"[dim]prompt {s.prompt_tokens / 1000:.1f}k tok "
-            f"(cached {s.cached_tokens / 1000:.1f}k)  ·  /mute /voice /quit[/dim]"
+            f"(cached {s.cached_tokens / 1000:.1f}k)  ·  "
+            "PgUp/PgDn scroll  ·  /mute /voice /quit[/dim]"
         )
         if s.dropped_chunks:
             line3 += f"  [red]audio dropped: {s.dropped_chunks} chunks[/red]"
