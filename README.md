@@ -22,8 +22,8 @@ mid-answer, the in-flight answer is cancelled mid-sentence and replaced.
   harness brings its own model endpoint and tools. See [Choosing an agent harness](#choosing-an-agent-harness).
 - **Type to it** — an always-on chat bar forwards your message straight to the agent, in the
   same session as the live conversation
-- **Tools with a leash** — read-only tools run instantly; writes (tickets, files, shell)
-  pause for your `y`/`n`; MCP servers from your config are forwarded to the harness
+- **Tools with a leash** — the harness's tools (incl. any MCP servers it's configured with)
+  run read-only instantly; writes (tickets, files, shell) pause for your `y`/`n`
 - **Fast streaming STT** — [Deepgram](https://deepgram.com) by default (low latency); a local
   whisper fallback (any OpenAI-compatible `/audio/transcriptions` endpoint, Docker included)
   for offline use, at the cost of higher latency
@@ -62,7 +62,7 @@ system audio ──► STT ("THEM") ──┘                 │ every finalize
    (BlackHole)                                    │   — or a message you type in the chat bar
                                                   ▼
                               Agent harness (ACP subprocess: opencode / claude / pi / …)
-                              owns the model + tools; MCP servers forwarded
+                              owns the model + tools (incl. its own MCP servers)
                                        │ text deltas        │ tool calls
                                        ▼                    ▼
                               live answer timeline    ⏸ y/n confirmation gate
@@ -144,19 +144,15 @@ DEEPGRAM_API_KEY = "..."
 #   EARPIECE_STT = "whisper"
 #   STT_BASE_URL = "http://localhost:8001/v1"
 #   STT_MODEL = "Systran/faster-whisper-small"
-
-# optional — you normally configure MCP in the harness itself (opencode/Claude Code/…);
-# this just forwards a few extra servers to it at session start if you'd rather keep them here
-[mcp_servers.jira]
-command = "uvx"
-args = ["mcp-atlassian"]
-[mcp_servers.jira.env]
-JIRA_URL = "https://yourcompany.atlassian.net"
-JIRA_PERSONAL_TOKEN = "..."
 ```
 
+> **Deepgram free credit:** at the time of writing, signing up gives **$200 in free credit** —
+> plenty to run earpiece for a long while. See [deepgram.com/pricing](https://deepgram.com/pricing).
+
 The harness must be set up on its own once and supplies the model that actually answers —
-earpiece just spawns `AGENT_CMD` and speaks ACP to it. earpiece itself needs **no LLM
+earpiece just spawns `AGENT_CMD` and speaks ACP to it. **Tools and MCP servers are configured
+in the harness** (opencode, Claude Code, …), not in earpiece; earpiece only surfaces the
+harness's tool calls and gates writes behind your `y`/`n`. earpiece itself needs **no LLM
 config**: the only model in the loop lives inside the harness.
 
 Optional keys: `AGENT_CWD` to pin the harness's working directory,
