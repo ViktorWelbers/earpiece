@@ -66,3 +66,19 @@ def test_turn_end_clears_stale_pending_banner():
     view.on_action("create_ticket", {}, "pending")
     view.on_end("a1", True)  # interrupted turn — confirmation is moot
     assert view.status.pending_action == ""
+
+
+def test_chat_message_appears_in_timeline_before_the_reply():
+    view = make_view()
+    view.on_chat("summarize the meeting")
+    stream(view, "a1", "Three open action items.")
+    assert [type(e).__name__ for e in view.answers] == ["ChatEntry", "AnswerEntry"]
+    assert view.answers[0].text == "summarize the meeting"
+
+
+def test_always_on_input_renders_the_buffer():
+    view = make_view()
+    view.set_input("draft a reply")
+    assert view.input_buffer == "draft a reply"
+    layout = view._render()  # always-on input bar must render without error
+    assert layout is not None

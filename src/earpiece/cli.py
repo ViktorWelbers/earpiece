@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import logging
 import os
+import re
 import sys
 import termios
 import tty
@@ -152,10 +154,11 @@ def _wizard() -> None:
     )
 
     console.print(
-        "\n[bold]watcher[/bold] — a fast OpenAI-compatible model that decides when to speak"
+        "\n[bold]utility model[/bold] — a small OpenAI-compatible model used only to summarize"
+        " long transcripts (the responder itself is the ACP agent harness above)"
     )
     values["LLM_BASE_URL"] = typer.prompt(
-        "Watcher LLM base URL (any OpenAI-compatible endpoint)",
+        "Utility LLM base URL (any OpenAI-compatible endpoint)",
         default=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
     )
     values["LLM_API_KEY"] = typer.prompt(
@@ -172,7 +175,7 @@ def _wizard() -> None:
     if models:
         console.print(f"[dim]models on this endpoint: {', '.join(models[:10])}[/dim]")
     values["LLM_RESPONDER_MODEL"] = typer.prompt(
-        "Watcher model (fast/cheap — it runs on every utterance)",
+        "Utility model (small/cheap — summarizes the transcript on long sessions)",
         default=models[0] if models else None,
     )
 
@@ -199,7 +202,7 @@ def _wizard() -> None:
         "file, e.g.\n  [mcp_servers.jira]\n  command = \"uvx\"\n  "
         "args = [\"mcp-atlassian\"][/dim]"
     )
-    console.print('try it:  [bold]earpiece run "help me with tech trivia" --eager[/bold]')
+    console.print('try it:  [bold]earpiece run "help me with tech trivia"[/bold]')
 
 
 def _discover_models(base_url: str, api_key: str, verify: bool) -> list[str]:
@@ -229,10 +232,6 @@ def run(
         None, help="STT engine: deepgram | whisper (default: from config file, else deepgram)"
     ),
     voice: str | None = typer.Option(None, help="TTS engine: say | elevenlabs (default: text)"),
-    eager: bool = typer.Option(False, "--eager", help="Respond on every THEM utterance"),
-    eager_source: str = typer.Option(
-        "them", help="Eager trigger channel: them | both (both = answer your own mic too)"
-    ),
     debug_dump_wav: bool = typer.Option(False, help="Dump captured audio to debug_audio/*.wav"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Debug logging to earpiece.log"),
 ) -> None:
@@ -250,8 +249,6 @@ def run(
             output_device=output_device,
             stt_engine=stt,
             tts_engine=voice,
-            eager=eager,
-            eager_source=eager_source,
             debug_dump_wav=debug_dump_wav,
         )
 
@@ -302,37 +299,70 @@ async def _main(settings: Settings) -> None:
             await hotkeys
 
 
+# ANSI escape sequences (arrow/function keys, bare ESC) — stripped before the
+# bytes are decoded so they never land in the chat buffer.
+_ESC_SEQ = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1bO.|\x1b")
+
+
 async def _hotkey_loop(orch) -> None:
-    """Raw-tty hotkeys: space=push-to-ask, y/n=confirm or deny a pending tool
-    call, m=mute mic, v=toggle voice gate, q=quit."""
+    """Always-on chat composer over the raw tty: every key types into the bar,
+    enter sends the message straight to the ACP agent (an empty line is
+    push-to-ask), backspace edits. Slash commands run actions instead of
+    sending: /quit (or /q), /mute, /voice. While a tool call is awaiting
+    confirmation, y/n approve/deny it (the modal case wins over composing)."""
     loop = asyncio.get_running_loop()
     fd = sys.stdin.fileno()
     try:
         old = termios.tcgetattr(fd)
     except termios.error:
-        return  # not a tty (tests, pipes) — hotkeys disabled
+        return  # not a tty (tests, pipes) — input disabled
     tty.setcbreak(fd)
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    buffer = ""
     try:
         while True:
-            key = await loop.run_in_executor(None, sys.stdin.read, 1)
-            match key:
-                case " ":
-                    orch.push_to_ask()
-                case "y":
-                    orch.resolve_action(True)
-                case "n":
-                    orch.resolve_action(False)
-                case "m":
-                    orch.toggle_mute()
-                case "v":
-                    if orch.playback is not None:
-                        orch.console.status.voice = not orch.console.status.voice
-                        orch.playback.gate(not orch.console.status.voice)
-                case "q":
-                    orch.shutdown()
-                    return
+            data = await loop.run_in_executor(None, os.read, fd, 256)
+            if not data:  # EOF on stdin
+                return
+            for ch in decoder.decode(_ESC_SEQ.sub(b"", data)):
+                # A pending tool call is modal: y/n resolve it, nothing else.
+                if orch.console.status.pending_action and ch in ("y", "n"):
+                    orch.resolve_action(ch == "y")
+                    continue
+                if ch in ("\r", "\n"):  # submit
+                    text, buffer = buffer.strip(), ""
+                    orch.console.set_input("")
+                    if _dispatch_command(orch, text):
+                        if text in ("/quit", "/q"):
+                            return
+                    elif text:
+                        await orch.send_chat(text)
+                    else:
+                        orch.push_to_ask()
+                elif ch in ("\x7f", "\x08"):  # backspace
+                    buffer = buffer[:-1]
+                    orch.console.set_input(buffer)
+                elif ch.isprintable():
+                    buffer += ch
+                    orch.console.set_input(buffer)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _dispatch_command(orch, text: str) -> bool:
+    """Run a /slash command; return True if `text` was a recognized command."""
+    match text:
+        case "/quit" | "/q":
+            orch.shutdown()
+        case "/mute":
+            orch.toggle_mute()
+        case "/voice":
+            if orch.playback is not None:
+                orch.console.status.voice = not orch.console.status.voice
+                orch.playback.gate(not orch.console.status.voice)
+        case _:
+            return False
+    return True
 
 
 def main() -> None:  # console-script shim

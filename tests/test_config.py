@@ -94,8 +94,7 @@ def test_stt_api_key_defaults_to_local(env):
 
 
 def test_flags_win_over_defaults(env):
-    s = Settings.from_env("mission", eager=True, tts_engine="say", mic_device="2")
-    assert s.eager is True
+    s = Settings.from_env("mission", tts_engine="say", mic_device="2")
     assert s.tts_engine == "say"
     assert s.mic_device == "2"
 

@@ -32,7 +32,6 @@ class StatusState:
     stt: bool = False
     voice: bool = False
     mic_muted: bool = False
-    mode: str = "normal"  # normal | eager
     last_decision: str = "—"
     decision_reason: str = ""
     prompt_tokens: int = 0
@@ -62,11 +61,20 @@ class ActionEntry:
 
 
 @dataclass
+class ChatEntry:
+    """One operator message typed into the chat box and forwarded to the agent."""
+
+    wall_time: str
+    text: str
+
+
+@dataclass
 class ConsoleView:
     transcript: TranscriptStore
     status: StatusState = field(default_factory=StatusState)
-    answers: list[AnswerEntry | ActionEntry] = field(default_factory=list)
+    answers: list[AnswerEntry | ActionEntry | ChatEntry] = field(default_factory=list)
     answer_text: str = ""  # the one in-flight (streaming) answer
+    input_buffer: str = ""  # the always-on chat composer
     _live: Live | None = None
 
     def start(self) -> None:
@@ -92,6 +100,16 @@ class ConsoleView:
     def on_answer_start(self) -> None:
         self.answer_text = ""
         self.status.pending_action = ""
+        self.refresh()
+
+    def on_chat(self, text: str) -> None:
+        """Echo an operator chat message into the timeline before the agent replies."""
+        self.answers.append(ChatEntry(time.strftime("%H:%M:%S"), text))
+        self.refresh()
+
+    def set_input(self, buffer: str) -> None:
+        """Update the always-on chat composer (driven by the input loop)."""
+        self.input_buffer = buffer
         self.refresh()
 
     def on_delta(self, _answer_id: str, delta: str) -> None:
@@ -135,14 +153,22 @@ class ConsoleView:
         layout = Layout()
         layout.split_column(
             Layout(name="main", ratio=1),
-            Layout(name="status", size=4),
+            Layout(self._input_panel(), name="input", size=3),
+            Layout(self._status_panel(), name="status", size=4),
         )
         layout["main"].split_row(
             Layout(self._transcript_panel(), name="transcript", ratio=1),
             Layout(self._answer_panel(), name="answer", ratio=1),
         )
-        layout["status"].update(self._status_panel())
         return layout
+
+    def _input_panel(self) -> Panel:
+        text = Text()
+        text.append("› ", style="bold green")
+        text.append(self.input_buffer)
+        text.append("▌", style="green")  # cursor
+        return Panel(text, title="chat → agent  [dim](enter=send · empty=respond now)[/dim]",
+                     border_style="green")
 
     def _transcript_panel(self) -> Panel:
         lines: list[Text] = []
@@ -172,6 +198,13 @@ class ConsoleView:
                 line.append(label, style=_ACTION_STYLE[entry.status])
                 blocks.append(line)
                 continue
+            if isinstance(entry, ChatEntry):
+                line = Text()
+                line.append(f"[{entry.wall_time}] ", style="dim")
+                line.append("you: ", style="bold green")
+                line.append(entry.text)
+                blocks.append(line)
+                continue
             text = Text()
             text.append(f"[{entry.wall_time}] ", style="dim")
             if entry.interrupted:
@@ -198,7 +231,7 @@ class ConsoleView:
         mic_label = "mic[dim](muted)[/dim]" if s.mic_muted else "mic"
         line1 = (
             f"{dot(s.mic)} {mic_label}  {dot(s.system_audio)} sys  {dot(s.stt)} stt  "
-            f"{dot(s.voice)} voice  |  mode: {s.mode}  |  decision: [bold]{s.last_decision}[/bold]"
+            f"{dot(s.voice)} voice  |  decision: [bold]{s.last_decision}[/bold]"
         )
         if s.pending_action:  # a tool call is waiting on the operator — nothing matters more
             line2 = (
@@ -209,7 +242,7 @@ class ConsoleView:
             line2 = f"[dim]{s.notice or s.decision_reason}[/dim]"  # errors win over decisions
         line3 = (
             f"[dim]prompt {s.prompt_tokens / 1000:.1f}k tok "
-            f"(cached {s.cached_tokens / 1000:.1f}k)[/dim]"
+            f"(cached {s.cached_tokens / 1000:.1f}k)  ·  /mute /voice /quit[/dim]"
         )
         if s.dropped_chunks:
             line3 += f"  [red]audio dropped: {s.dropped_chunks} chunks[/red]"

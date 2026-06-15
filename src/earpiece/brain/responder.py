@@ -1,6 +1,6 @@
 """Agentic responder: each answer turn is forwarded to an ACP agent harness.
 
-earpiece stays an audio frontend — capture, STT, watcher, TTS, UI. The harness
+earpiece stays an audio frontend — capture, STT, TTS, UI. The harness
 (pi, claude-agent-acp, gemini --experimental-acp, ...) owns the model endpoint,
 the tools (its own + the MCP servers from our config), and the conversation
 context. Streamed text lands in the same on_delta/TTS path as before; tool
@@ -122,10 +122,14 @@ class Responder:
             return answer.text or "(answer just started)"
         return None
 
-    def start(self) -> Answer:
-        """Begin a new agent turn over the transcript lines since the last one."""
+    def start(self, prompt_text: str | None = None) -> Answer:
+        """Begin a new agent turn. With no argument the turn covers the
+        transcript lines since the last one; `prompt_text` instead forwards an
+        operator message straight to the ACP agent (the chat box)."""
         answer = Answer()
-        answer.task = asyncio.create_task(self._run(answer), name=f"responder-{answer.id}")
+        answer.task = asyncio.create_task(
+            self._run(answer, prompt_text), name=f"responder-{answer.id}"
+        )
         self.current = answer
         return answer
 
@@ -154,17 +158,21 @@ class Responder:
 
     # ------------------------------------------------------------- turn loop
 
-    async def _run(self, answer: Answer) -> None:
+    async def _run(self, answer: Answer, prompt_text: str | None = None) -> None:
         self._tts_buffer = ""
         try:
             if self._session_id is None:  # normally done at startup (fail fast)
                 await self.start_agent()
-            block = self.transcript.drain_pending_block()
-            if not block:
-                block = "(no new transcript lines — the operator asked you to respond now)"
+            if prompt_text is not None:  # operator chat message — forward verbatim
+                block, label = prompt_text, "operator"
+            else:
+                block = self.transcript.drain_pending_block()
+                if not block:
+                    block = "(no new transcript lines — the operator asked you to respond now)"
+                label = "transcript"
             if not self._instructed:
                 instructions = responder_system(self.settings.mission, with_tools=True)
-                block = f"{instructions}\n\n[transcript]\n{block}"
+                block = f"{instructions}\n\n[{label}]\n{block}"
                 self._instructed = True
             stop_reason = await self.agent.prompt(self._session_id or "", block)
             log.debug("turn %s finished: %s", answer.id, stop_reason)

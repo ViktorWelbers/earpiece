@@ -24,7 +24,6 @@ from .audio.playback import PlaybackQueue
 from .audio.vad import EnergyVAD
 from .brain.responder import Responder
 from .brain.transcript import TranscriptStore
-from .brain.watcher import Watcher
 from .config import Settings
 from .events import Action, AudioChunk, Decision, TranscriptEvent
 from .llm import LLMHandle
@@ -43,15 +42,13 @@ _STALE_INTERIM_SECS = 6.0
 class Orchestrator:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        # the watcher (and compaction summarizer) stay on the plain OpenAI-compatible
-        # path — cheap structured calls; the responder is the ADK agent
-        self.watcher_llm = LLMHandle(settings.watcher)
+        # only the responder (the ACP agent) talks to a model now; this plain
+        # OpenAI-compatible handle is kept solely to summarize a long transcript
+        self.summarizer = LLMHandle(settings.watcher)
         self.transcript = TranscriptStore(
             mission=settings.mission, max_context_tokens=settings.max_context_tokens
         )
-        mode = "eager" if settings.eager else "normal"
-        self.console = ConsoleView(self.transcript, StatusState(mode=mode))
-        self.watcher = Watcher(self.watcher_llm, settings.mission)
+        self.console = ConsoleView(self.transcript, StatusState())
 
         # audio plumbing
         self.mic_q: asyncio.Queue[AudioChunk] = asyncio.Queue(maxsize=512)
@@ -235,8 +232,8 @@ class Orchestrator:
     # --------------------------------------------------------------- brain
 
     async def _brain_loop(self) -> None:
-        """Sequential decision point. Watcher calls are serialized; utterances
-        arriving during a call are coalesced into the next one."""
+        """Sequential decision point: each finalized utterance triggers an
+        answer turn; utterances arriving during a turn are coalesced."""
         while True:
             event = await self._next_brain_event()
             if event is not None:
@@ -248,7 +245,7 @@ class Orchestrator:
             forced = self._push_to_ask.is_set()
             self._push_to_ask.clear()
 
-            decision = await self._decide(event, forced)
+            decision = self._decide(event, forced)
             self.console.status.last_decision = decision.action.value
             self.console.status.decision_reason = decision.reason
             self.console.refresh()
@@ -264,7 +261,7 @@ class Orchestrator:
                     await self._start_answer()
 
             if self.transcript.needs_compaction():
-                await self.transcript.compact(self.watcher_llm)
+                await self.transcript.compact(self.summarizer)
 
     async def _next_brain_event(self) -> TranscriptEvent | None:
         """Wait for a transcript event OR the push-to-ask hotkey."""
@@ -277,25 +274,28 @@ class Orchestrator:
             return getter.result()
         return None  # push-to-ask fired
 
-    async def _decide(self, event: TranscriptEvent | None, forced: bool) -> Decision:
+    def _decide(self, event: TranscriptEvent | None, forced: bool) -> Decision:
+        """Always answer: every finalized utterance (either speaker) gets a
+        response; an in-flight answer is interrupted so the latest line wins."""
         in_flight = self.responder.partial_answer is not None
+        action = Action.INTERRUPT_AND_RESPOND if in_flight else Action.RESPOND
         if forced:
-            action = Action.INTERRUPT_AND_RESPOND if in_flight else Action.RESPOND
             return Decision(action=action, reason="push-to-ask", urgency="high")
         if event is None:
             return Decision(action=Action.STAY_SILENT, reason="no new input", urgency="low")
-        if self.settings.eager:
-            if event.source != "THEM" and self.settings.eager_source != "both":
-                return Decision(
-                    action=Action.STAY_SILENT, reason="eager: ME utterance", urgency="low"
-                )
-            action = Action.INTERRUPT_AND_RESPOND if in_flight else Action.RESPOND
-            return Decision(action=action, reason="eager mode", urgency="normal")
-        return await self.watcher.decide(self.transcript, self.responder.partial_answer)
+        return Decision(action=action, reason="new utterance", urgency="normal")
 
-    async def _start_answer(self) -> None:
+    async def _start_answer(self, prompt_text: str | None = None) -> None:
         self.console.on_answer_start()
-        self.responder.start()
+        self.responder.start(prompt_text)
+
+    async def send_chat(self, text: str) -> None:
+        """Operator typed a message in the chat box — forward it straight to the
+        ACP agent, pre-empting any in-flight answer."""
+        if self.responder.partial_answer is not None:
+            await self._interrupt_current()
+        self.console.on_chat(text)
+        await self._start_answer(prompt_text=text)
 
     def _on_llm_error(self, exc: Exception) -> None:
         self.console.status.notice = f"LLM error: {type(exc).__name__}: {exc} (see earpiece.log)"

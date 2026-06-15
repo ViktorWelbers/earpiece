@@ -117,8 +117,6 @@ class Settings:
     output_device: int | str | None = None
     stt_engine: str = "deepgram"
     tts_engine: str | None = None  # None = text only; "say" | "elevenlabs"
-    eager: bool = False
-    eager_source: str = "them"  # "them" | "both" — which channels trigger eager answers
     endpointing_ms: int = 300
     # --stt whisper: any OpenAI-compatible /audio/transcriptions endpoint
     # (vLLM serving a Whisper model, speaches, LocalAI, OpenAI itself, ...)
@@ -149,12 +147,8 @@ class Settings:
         output_device: int | str | None = None,
         stt_engine: str | None = None,
         tts_engine: str | None = None,
-        eager: bool = False,
-        eager_source: str = "them",
         debug_dump_wav: bool = False,
     ) -> Settings:
-        if eager_source not in ("them", "both"):
-            raise ConfigError("--eager-source must be 'them' or 'both'")
         cfg = _load_config_file()
 
         def get(name: str, default: str | None = None) -> str | None:
@@ -226,8 +220,6 @@ class Settings:
             ),
             stt_engine=stt,
             tts_engine=tts_engine,
-            eager=eager,
-            eager_source=eager_source,
             debug_dump_wav=debug_dump_wav,
             agent_cmd=agent_cmd,
             agent_cwd=get("AGENT_CWD"),

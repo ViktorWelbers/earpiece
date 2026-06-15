@@ -56,6 +56,17 @@ async def test_natural_completion_commits_answer():
     assert responder.partial_answer is None
 
 
+async def test_chat_message_is_forwarded_verbatim_not_the_transcript():
+    responder, store, deltas, _ = make_responder([["On it."]], delta_delay=0)
+    answer = responder.start(prompt_text="summarize the meeting so far")
+    await answer.task
+    prompt = responder.agent.prompts[0]
+    assert "summarize the meeting so far" in prompt  # operator's words forwarded
+    assert "[operator]" in prompt  # labelled as a direct message on the first turn
+    assert "integration timeline" not in prompt  # transcript was NOT drained
+    assert "".join(deltas).startswith("On it.")
+
+
 async def test_first_turn_carries_mission_then_only_new_lines():
     responder, store, _, _ = make_responder([["Answer one."], ["Answer two."]], delta_delay=0)
     answer = responder.start()
