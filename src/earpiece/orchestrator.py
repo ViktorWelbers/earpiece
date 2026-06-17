@@ -67,13 +67,14 @@ class Orchestrator:
             self.transcript,
             on_delta=self.console.on_delta,
             on_sentence=(self._enqueue_tts if self.tts else None),
-            on_end=self.console.on_end,
+            on_end=self._on_answer_end,
             on_error=self._on_llm_error,
             on_action=self.console.on_action,
         )
 
         self._tasks: list[asyncio.Task] = []
         self._push_to_ask = asyncio.Event()
+        self._answer_idle = asyncio.Event()  # set when an answer ends naturally
         self._stop = asyncio.Event()
 
     # ------------------------------------------------------------------ run
@@ -238,8 +239,17 @@ class Orchestrator:
                 if utterance is None:  # interim — UI only
                     continue
 
+            idle = self._answer_idle.is_set()
+            self._answer_idle.clear()
             forced = self._push_to_ask.is_set()
             self._push_to_ask.clear()
+
+            # An answer just finished with speech still unanswered (text mode
+            # never interrupts) — drain the backlog in one follow-up turn.
+            if event is None and idle and not forced:
+                if self.responder.partial_answer is None and self.transcript.has_pending:
+                    await self._start_answer()
+                continue
 
             decision = self._decide(event, forced)
             self.console.status.last_decision = decision.action.value
@@ -260,18 +270,24 @@ class Orchestrator:
         """Wait for a transcript event OR the push-to-ask hotkey."""
         getter = asyncio.create_task(self.transcript_q.get())
         pusher = asyncio.create_task(self._push_to_ask.wait())
-        done, pending = await asyncio.wait({getter, pusher}, return_when=asyncio.FIRST_COMPLETED)
+        idler = asyncio.create_task(self._answer_idle.wait())
+        done, pending = await asyncio.wait(
+            {getter, pusher, idler}, return_when=asyncio.FIRST_COMPLETED
+        )
         for task in pending:
             task.cancel()
         if getter in done:
             return getter.result()
-        return None  # push-to-ask fired
+        return None  # push-to-ask or answer-idle fired
 
     def _decide(self, event: TranscriptEvent | None, forced: bool) -> Decision:
         """Always answer: every finalized utterance (either speaker) gets a
-        response; an in-flight answer is interrupted so the latest line wins."""
+        response. In voice mode an in-flight answer is interrupted so the latest
+        line wins (don't talk over stale audio); in text-only mode the answer is
+        left to finish and the new lines coalesce into a follow-up turn."""
         in_flight = self.responder.partial_answer is not None
-        action = Action.INTERRUPT_AND_RESPOND if in_flight else Action.RESPOND
+        voice = self.tts is not None
+        action = Action.INTERRUPT_AND_RESPOND if (in_flight and voice) else Action.RESPOND
         if forced:
             return Decision(action=action, reason="push-to-ask", urgency="high")
         if event is None:
@@ -289,6 +305,11 @@ class Orchestrator:
             await self._interrupt_current()
         self.console.on_chat(text)
         await self._start_answer(prompt_text=text)
+
+    def _on_answer_end(self, answer_id: str, interrupted: bool) -> None:
+        self.console.on_end(answer_id, interrupted)
+        if not interrupted:  # natural finish — wake the brain loop to drain any backlog
+            self._answer_idle.set()
 
     def _on_llm_error(self, exc: Exception) -> None:
         self.console.status.notice = f"LLM error: {type(exc).__name__}: {exc} (see earpiece.log)"

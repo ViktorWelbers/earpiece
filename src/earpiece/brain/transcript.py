@@ -77,6 +77,11 @@ class TranscriptStore:
         self._pending.append(utt)
         return utt
 
+    @property
+    def has_pending(self) -> bool:
+        """True if utterances have arrived since the last drained turn."""
+        return bool(self._pending)
+
     # ---- chat history -------------------------------------------------
 
     def as_messages(self) -> list[Message]:
