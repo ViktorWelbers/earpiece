@@ -1,7 +1,14 @@
 from rich.text import Text
 
 from earpiece.brain.transcript import TranscriptStore
+from earpiece.events import TranscriptEvent
 from earpiece.output.console import ActionEntry, ConsoleView
+
+
+def add_line(view: ConsoleView, text: str) -> None:
+    view.transcript.add(
+        TranscriptEvent(source="ME", text=text, is_final=True, started_at=0.0, ended_at=0.0)
+    )
 
 
 def make_view() -> ConsoleView:
@@ -90,14 +97,46 @@ def test_window_shows_bottom_and_scrolls_up():
     assert ConsoleView._window(lines, 20, 5) == lines  # fits entirely → no windowing
 
 
+def test_scroll_is_a_noop_until_content_overflows():
+    view = make_view()
+    add_line(view, "just one line")
+    view._render()  # populates _max_rows; one short line never overflows
+    assert view._scroll_cap() == 0
+    view.scroll_up(5)
+    assert view.scroll == 0  # nothing to scroll to
+
+
 def test_scroll_state_clamps_and_returns_to_live():
     view = make_view()
-    view.scroll_down(5)  # already at bottom
+    for i in range(40):
+        add_line(view, f"line {i}")
+    view._render()  # 40 short rows >> pane height → scrollable
+    cap = view._scroll_cap()
+    assert cap > 0
+    view.scroll_down(5)  # already at the live bottom
     assert view.scroll == 0
     view.scroll_up(3)
     assert view.scroll == 3
+    view.scroll_to_top()
+    assert view.scroll == cap  # Home reaches the very top, no further
+    view.scroll_up(1)
+    assert view.scroll == cap
     view.scroll_to_bottom()
     assert view.scroll == 0
+
+
+def test_wrapped_long_lines_make_the_pane_scrollable():
+    """Regression: a few long lines that wrap fill the pane even though the entry
+    count is small — scrolling must track visual rows, not entries."""
+    view = make_view()
+    for i in range(4):
+        add_line(view, f"{i}: " + "word " * 80)  # each wraps to many rows
+    view._render()
+    rows = view._visual_rows(
+        [Text(f"{i}: " + "word " * 80) for i in range(4)]
+    )
+    assert len(rows) > 4  # wrapping expanded 4 entries into many rows
+    assert view._scroll_cap() > 0  # so the pane is scrollable despite few entries
 
 
 def test_chat_message_appears_in_timeline_before_the_reply():

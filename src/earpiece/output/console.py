@@ -76,7 +76,8 @@ class ConsoleView:
     answers: list[AnswerEntry | ActionEntry | ChatEntry] = field(default_factory=list)
     answer_text: str = ""  # the one in-flight (streaming) answer
     input_buffer: str = ""  # the always-on chat composer
-    scroll: int = 0  # display lines scrolled up from the live bottom (0 = follow)
+    scroll: int = 0  # display rows scrolled up from the live bottom (0 = follow)
+    _max_rows: int = 0  # tallest pane's wrapped row count, refreshed each render
     _console: Console | None = None
     _live: Live | None = None
 
@@ -101,10 +102,12 @@ class ConsoleView:
 
     # -- scrollback -------------------------------------------------------
 
+    def _scroll_cap(self) -> int:
+        """How far up there is to go: rows above the bottom window (0 if it fits)."""
+        return max(0, self._max_rows - self._pane_height())
+
     def scroll_up(self, n: int = 1) -> None:
-        # upper bound is loose; _window clamps the actual view to the content top
-        cap = len(self.transcript.utterances) + len(self.answers) + 50
-        self.scroll = min(cap, self.scroll + n)
+        self.scroll = min(self._scroll_cap(), self.scroll + n)
         self.refresh()
 
     def scroll_down(self, n: int = 1) -> None:
@@ -112,7 +115,8 @@ class ConsoleView:
         self.refresh()
 
     def scroll_to_top(self) -> None:
-        self.scroll_up(len(self.transcript.utterances) + len(self.answers) + 50)
+        self.scroll = self._scroll_cap()
+        self.refresh()
 
     def scroll_to_bottom(self) -> None:
         self.scroll = 0
@@ -123,6 +127,22 @@ class ConsoleView:
         height = self._console.size.height if self._console is not None else 24
         return max(3, height - 3 - 4 - 2)
 
+    def _content_width(self) -> int:
+        """Wrap width inside a main pane: half the screen, minus border+padding."""
+        width = self._console.size.width if self._console is not None else 80
+        return max(10, width // 2 - 4)
+
+    def _visual_rows(self, lines: list[Text]) -> list[Text]:
+        """Expand logical lines into the wrapped terminal rows they actually
+        occupy, so scrolling tracks what's on screen — not the entry count."""
+        console = self._console or Console()
+        width = self._content_width()
+        rows: list[Text] = []
+        for line in lines:
+            wrapped = line.wrap(console, width)
+            rows.extend(wrapped if wrapped else [Text("")])
+        return rows
+
     @staticmethod
     def _window(lines: list[Text], height: int, scroll: int) -> list[Text]:
         """The visible slice of `lines`: the bottom `height`, shifted up by `scroll`."""
@@ -131,8 +151,8 @@ class ConsoleView:
         end = max(height, min(len(lines) - scroll, len(lines)))
         return lines[end - height : end]
 
-    def _scroll_hint(self, total: int) -> str:
-        if self.scroll > 0 and total > self._pane_height():
+    def _scroll_hint(self, rows: int) -> str:
+        if self.scroll > 0 and rows > self._pane_height():
             return "  [dim]↑ scrolled · End=live[/dim]"
         return ""
 
@@ -188,6 +208,7 @@ class ConsoleView:
     # -- rendering --------------------------------------------------------
 
     def _render(self) -> Layout:
+        self._max_rows = 0  # repopulated by the panels below (tallest wins)
         layout = Layout()
         layout.split_column(
             Layout(name="main", ratio=1),
@@ -221,9 +242,11 @@ class ConsoleView:
             text.append("▌ ", style="dim")
             text.append(f"{speaker}: {interim}", style="dim italic")
             lines.append(text)
-        visible = self._window(lines, self._pane_height(), self.scroll)
+        rows = self._visual_rows(lines)
+        self._max_rows = max(self._max_rows, len(rows))
+        visible = self._window(rows, self._pane_height(), self.scroll)
         return Panel(Group(*visible) if visible else Text("listening…", style="dim"),
-                     title=f"transcript{self._scroll_hint(len(lines))}", border_style="blue")
+                     title=f"transcript{self._scroll_hint(len(rows))}", border_style="blue")
 
     def _answer_panel(self) -> Panel:
         blocks: list[Text] = []
@@ -258,9 +281,11 @@ class ConsoleView:
             blocks.append(live)
         elif blocks and not blocks[-1].plain:
             blocks.pop()  # drop trailing spacer
-        visible = self._window(blocks, self._pane_height(), self.scroll)
+        rows = self._visual_rows(blocks)
+        self._max_rows = max(self._max_rows, len(rows))
+        visible = self._window(rows, self._pane_height(), self.scroll)
         body = Group(*visible) if visible else Text("—", style="dim")
-        return Panel(body, title=f"answers{self._scroll_hint(len(blocks))}", border_style="green")
+        return Panel(body, title=f"answers{self._scroll_hint(len(rows))}", border_style="green")
 
     def _status_panel(self) -> Panel:
         s = self.status
