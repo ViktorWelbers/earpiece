@@ -26,8 +26,9 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 
 from ..config import Settings
-from .acp import ACPAgent, acp_mcp_servers
+from .acp import ACPAgent, ACPError, acp_mcp_servers
 from .prompts import responder_system
+from .session_store import SessionRecord
 from .transcript import TranscriptStore
 
 log = logging.getLogger(__name__)
@@ -93,22 +94,61 @@ class Responder:
         self.last_usage: dict = {}  # OpenAI usage shape, for the status bar
         self._session_id: str | None = None
         self._instructed = False  # mission goes out with the first turn
+        self._resume_prefix = ""  # prior transcript injected on the first turn (replay resume)
         self._tool_titles: dict[str, str] = {}  # toolCallId -> human title
         self._tts_buffer = ""
 
+    @property
+    def session_id(self) -> str | None:
+        """The harness session handle, for the orchestrator's auto-save."""
+        return self._session_id
+
     # ------------------------------------------------------------ lifecycle
 
-    async def start_agent(self) -> None:
+    async def start_agent(self, resume: SessionRecord | None = None) -> None:
         """Spawn the harness, handshake, open the session. Fails fast on a
-        broken AGENT_CMD instead of erroring on the first answer."""
+        broken AGENT_CMD instead of erroring on the first answer.
+
+        With `resume`, reattach to the saved harness session via ACP
+        `session/load` when the harness supports it (and it's the same harness +
+        cwd); otherwise open a fresh session and replay the prior transcript as a
+        first-turn context prefix so the agent still has the history."""
         init = await self.agent.start()
         agent_info = init.get("agentInfo") or {}
         log.info("acp agent ready: %s %s", agent_info.get("name", "?"),
                  agent_info.get("version", ""))
+        caps = init.get("agentCapabilities") or {}
         cwd = self.settings.agent_cwd or os.getcwd()
-        self._session_id = await self.agent.new_session(
-            cwd, acp_mcp_servers(self.settings.mcp_servers)
-        )
+        mcp = acp_mcp_servers(self.settings.mcp_servers)
+
+        if resume is not None and await self._reattach(resume, caps, cwd, mcp):
+            return
+        if resume is not None:  # couldn't reattach — seed the new session with history
+            self._resume_prefix = self.transcript.history_text()
+        self._session_id = await self.agent.new_session(cwd, mcp)
+
+    async def _reattach(
+        self, resume: SessionRecord, caps: dict, cwd: str, mcp: list[dict]
+    ) -> bool:
+        """Try ACP session/load. Returns True only if the harness owned the
+        session and reattached cleanly; False asks the caller to fall back."""
+        if not (resume.harness_session_id and caps.get("loadSession")):
+            return False
+        if resume.agent_cmd != self.settings.agent_cmd or resume.agent_cwd != cwd:
+            return False  # session/load is only valid against the same harness + cwd
+        saved_update = self.agent.on_update
+        self.agent.on_update = None  # drop the replayed conversation — UI is already restored
+        try:
+            await self.agent.load_session(resume.harness_session_id, cwd, mcp)
+        except ACPError as exc:
+            log.warning("session/load failed, falling back to transcript replay: %s", exc)
+            return False
+        finally:
+            self.agent.on_update = saved_update
+        self._session_id = resume.harness_session_id
+        self._instructed = True  # mission already lives in the reattached session
+        log.info("reattached to harness session %s", resume.harness_session_id)
+        return True
 
     async def close(self) -> None:
         await self.agent.stop()
@@ -172,8 +212,13 @@ class Responder:
                 label = "transcript"
             if not self._instructed:
                 instructions = responder_system(self.settings.mission, with_tools=True)
-                block = f"{instructions}\n\n[{label}]\n{block}"
+                prefix = (
+                    f"\n\n[prior conversation]\n{self._resume_prefix}"
+                    if self._resume_prefix else ""
+                )
+                block = f"{instructions}{prefix}\n\n[{label}]\n{block}"
                 self._instructed = True
+                self._resume_prefix = ""
             stop_reason = await self.agent.prompt(self._session_id or "", block)
             log.debug("turn %s finished: %s", answer.id, stop_reason)
             if self.on_sentence is not None and self._tts_buffer.strip():

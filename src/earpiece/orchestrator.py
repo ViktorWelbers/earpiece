@@ -22,7 +22,9 @@ from .audio.capture import (
 )
 from .audio.playback import PlaybackQueue
 from .audio.vad import EnergyVAD
+from .brain import session_store
 from .brain.responder import Responder
+from .brain.session_store import SessionRecord
 from .brain.transcript import TranscriptStore
 from .config import Settings
 from .events import Action, AudioChunk, Decision, TranscriptEvent
@@ -39,12 +41,19 @@ _STALE_INTERIM_SECS = 6.0
 
 
 class Orchestrator:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, resume: SessionRecord | None = None) -> None:
         self.settings = settings
         # the responder (the ACP agent harness) is the only thing that talks to a
         # model; earpiece keeps no LLM client of its own
         self.transcript = TranscriptStore(mission=settings.mission)
+        if resume is not None:  # repopulate the transcript pane from the saved session
+            self.transcript.restore(resume.transcript)
         self.console = ConsoleView(self.transcript, StatusState())
+        if resume is not None:  # and the answers pane
+            self.console.restore_answers(resume.answers)
+        # auto-saved every turn; reuse the id when resuming so we overwrite, not fork
+        self._resume = resume
+        self._record = resume or SessionRecord.new(settings)
 
         # audio plumbing
         self.mic_q: asyncio.Queue[AudioChunk] = asyncio.Queue(maxsize=512)
@@ -57,7 +66,13 @@ class Orchestrator:
         self.playback: PlaybackQueue | None = None
         self.tts = None
         if settings.tts_engine:
-            out_dev = resolve_device(settings.output_device, kind="output")
+            # a configured output device that isn't connected falls back to the
+            # system default rather than refusing to start (same as the mic)
+            out_dev = resolve_device(settings.output_device, kind="output", fallback=True)
+            if settings.output_device is not None and out_dev is None:
+                self.console.status.notice = (
+                    f"output {settings.output_device!r} not found — using the system default"
+                )
             self.playback = PlaybackQueue(out_dev)
             self.tts = tts_base.create(settings.tts_engine, settings)
         self._tts_q: asyncio.Queue[str] = asyncio.Queue()
@@ -82,9 +97,16 @@ class Orchestrator:
     async def run(self) -> None:
         # spawn the ACP harness before anything else: a broken AGENT_CMD should
         # be one clear startup error, not a failure on the first answer
-        await self.responder.start_agent()
+        await self.responder.start_agent(self._resume)
+        self._persist()  # record the session id; surfaces it in the picker before any answer
 
-        mic_dev = resolve_device(self.settings.mic_device, kind="input")
+        # a configured mic that isn't plugged in falls back to the system
+        # default rather than refusing to start
+        mic_dev = resolve_device(self.settings.mic_device, kind="input", fallback=True)
+        if self.settings.mic_device is not None and mic_dev is None:
+            self.console.status.notice = (
+                f"mic {self.settings.mic_device!r} not found — using the system default"
+            )
         sys_dev = (
             resolve_device(self.settings.system_device, kind="input")
             if self.settings.system_device is not None
@@ -134,6 +156,7 @@ class Orchestrator:
                 task.cancel()
             await asyncio.gather(*self._tasks, return_exceptions=True)
             await self.responder.interrupt()
+            self._persist()  # final save before tearing down the harness
             await self.responder.close()
             if self.playback is not None:
                 await self.playback.stop()
@@ -143,6 +166,19 @@ class Orchestrator:
 
     def shutdown(self) -> None:
         self._stop.set()
+
+    # --------------------------------------------------------- persistence
+
+    def _persist(self) -> None:
+        """Auto-save the session so it can be resumed later (best-effort)."""
+        self._record.mission = self.settings.mission
+        self._record.harness_session_id = self.responder.session_id
+        self._record.transcript = self.transcript.snapshot()
+        self._record.answers = self.console.snapshot_answers()
+        try:
+            session_store.save(self._record)
+        except OSError as exc:
+            log.warning("could not save session %s: %s", self._record.id, exc)
 
     # -------------------------------------------------------------- hotkeys
 
@@ -168,12 +204,18 @@ class Orchestrator:
         while True:
             chunk = await queue.get()
             if mic:
+                if self.mic_muted:
+                    # Muted: opt out of barge-in too, so the assistant is never
+                    # gated by ambient noise — or its own voice through speakers —
+                    # while you're silent. (Without this, mute only stopped
+                    # transcription and TTS still stuttered against the mic.)
+                    if self.playback is not None:
+                        self.playback.gate(False)
+                    continue
                 speaking = self.vad.feed(chunk.pcm)
                 if self.playback is not None:
                     # Barge-in: never talk over the operator.
                     self.playback.gate(speaking)
-                if self.mic_muted:
-                    continue
             elif self.playback is not None and self.playback.suppress_capture:
                 # Feedback-loop guard: our own TTS loops back through the
                 # Multi-Output Device — keep it out of the THEM channel.
@@ -305,11 +347,13 @@ class Orchestrator:
             await self._interrupt_current()
         self.console.on_chat(text)
         await self._start_answer(prompt_text=text)
+        self._persist()
 
     def _on_answer_end(self, answer_id: str, interrupted: bool) -> None:
         self.console.on_end(answer_id, interrupted)
         if not interrupted:  # natural finish — wake the brain loop to drain any backlog
             self._answer_idle.set()
+        self._persist()  # the turn is on the record now — save it
 
     def _on_llm_error(self, exc: Exception) -> None:
         self.console.status.notice = f"LLM error: {type(exc).__name__}: {exc} (see earpiece.log)"

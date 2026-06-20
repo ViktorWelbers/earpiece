@@ -21,6 +21,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from .brain import session_store
+from .brain.session_store import SessionRecord
 from .config import ConfigError, Settings, _load_config_file, config_path, save_config
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -221,13 +223,76 @@ def run(
         pass
 
 
-async def _main(settings: Settings) -> None:
+@app.command()
+def resume(
+    mic_device: str | None = typer.Option(None, help="Mic device index or name substring"),
+    system_device: str | None = typer.Option(None, help="System-audio (loopback) device"),
+    output_device: str | None = typer.Option(None, help="TTS output device (your earpiece)"),
+    stt: str | None = typer.Option(None, help="STT engine: deepgram | whisper"),
+    voice: str | None = typer.Option(None, help="TTS engine: say | elevenlabs (default: text)"),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Debug logging to earpiece.log"),
+) -> None:
+    """Pick a past session to resume (restores the transcript + the agent's memory)."""
+    console = Console()
+    records = session_store.list_sessions()
+    if not records:
+        console.print("[yellow]no saved sessions yet[/yellow] — start one with "
+                      '[bold]earpiece run "..."[/bold]')
+        raise typer.Exit(0)
+
+    table = Table(title="resume a session", show_lines=False)
+    table.add_column("#", justify="right", style="bold")
+    table.add_column("mission")
+    table.add_column("last active", style="dim")
+    table.add_column("turns", justify="right")
+    table.add_column("workspace", style="dim")
+    for i, rec in enumerate(records, 1):
+        mission = rec.mission if len(rec.mission) <= 50 else rec.mission[:49] + "…"
+        table.add_row(str(i), mission, session_store.ago(rec.updated_at),
+                      str(rec.turns), rec.agent_cwd or "—")
+    console.print(table)
+
+    choice = typer.prompt("resume which? (number, or q to quit)", default="1")
+    if choice.strip().lower() in ("q", "quit"):
+        raise typer.Exit(0)
+    try:
+        record = records[int(choice) - 1]
+    except (ValueError, IndexError):
+        err_console.print(f"[red]not a valid choice:[/red] {choice}")
+        raise typer.Exit(1) from None
+
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        filename="earpiece.log",
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    try:
+        settings = Settings.from_env(
+            record.mission,
+            mic_device=mic_device,
+            system_device=system_device,
+            output_device=output_device,
+            stt_engine=stt,
+            tts_engine=voice,
+        )
+    except ConfigError as exc:
+        err_console.print(f"[red]config error:[/red] {exc}")
+        raise typer.Exit(1) from None
+
+    console.print(f'[green]resuming[/green] "{record.mission}" ({record.turns} turns)')
+    try:
+        asyncio.run(_main(settings, resume=record))
+    except KeyboardInterrupt:
+        pass
+
+
+async def _main(settings: Settings, resume: SessionRecord | None = None) -> None:
     from .audio.capture import DeviceError
     from .brain.acp import ACPError
     from .orchestrator import Orchestrator
 
     try:
-        orch = Orchestrator(settings)
+        orch = Orchestrator(settings, resume=resume)
     except (DeviceError, ConfigError, KeyError) as exc:
         err_console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(1) from None

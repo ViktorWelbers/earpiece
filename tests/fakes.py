@@ -25,11 +25,22 @@ class FakeACPAgent:
       callable   -> awaited with the agent (e.g. a permission round-trip)
     """
 
-    def __init__(self, turns: list[list] | None = None, *, delta_delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        turns: list[list] | None = None,
+        *,
+        delta_delay: float = 0.0,
+        capabilities: dict | None = None,
+        load_error: bool = False,
+    ) -> None:
         self.turns = list(turns or [])
         self.delta_delay = delta_delay
+        self.capabilities = capabilities or {}
+        self.load_error = load_error  # make load_session raise (harness lost the session)
         self.prompts: list[str] = []
         self.cancelled: list[str] = []
+        self.loaded: list[str] = []  # session ids passed to load_session
+        self.new_sessions = 0
         self.started = False
         self.stopped = False
         self.on_update = None
@@ -37,13 +48,24 @@ class FakeACPAgent:
 
     async def start(self) -> dict:
         self.started = True
-        return {"protocolVersion": 1, "agentInfo": {"name": "fake"}}
+        return {
+            "protocolVersion": 1,
+            "agentInfo": {"name": "fake"},
+            "agentCapabilities": self.capabilities,
+        }
 
     async def stop(self) -> None:
         self.stopped = True
 
     async def new_session(self, cwd: str, mcp_servers: list) -> str:
+        self.new_sessions += 1
         return "sess-1"
+
+    async def load_session(self, session_id: str, cwd: str, mcp_servers: list) -> None:
+        if self.load_error:
+            from earpiece.brain.acp import ACPError
+            raise ACPError("harness no longer has that session")
+        self.loaded.append(session_id)
 
     async def cancel(self, session_id: str) -> None:
         self.cancelled.append(session_id)

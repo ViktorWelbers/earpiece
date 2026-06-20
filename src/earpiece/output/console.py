@@ -156,6 +156,36 @@ class ConsoleView:
             return "  [dim]↑ scrolled · End=live[/dim]"
         return ""
 
+    # -- persistence (resume) --------------------------------------------
+
+    def snapshot_answers(self) -> list[dict]:
+        """Serialize the answers timeline so a resumed session shows it again."""
+        out: list[dict] = []
+        for e in self.answers:
+            if isinstance(e, AnswerEntry):
+                out.append({"kind": "answer", "wall_time": e.wall_time,
+                            "text": e.text, "interrupted": e.interrupted})
+            elif isinstance(e, ActionEntry):
+                out.append({"kind": "action", "wall_time": e.wall_time,
+                            "call_id": e.call_id, "tool": e.tool,
+                            "args_summary": e.args_summary, "status": e.status})
+            elif isinstance(e, ChatEntry):
+                out.append({"kind": "chat", "wall_time": e.wall_time, "text": e.text})
+        return out
+
+    def restore_answers(self, data: list[dict]) -> None:
+        entries: list[AnswerEntry | ActionEntry | ChatEntry] = []
+        for e in data:
+            kind = e.get("kind")
+            if kind == "answer":
+                entries.append(AnswerEntry(e["wall_time"], e["text"], e["interrupted"]))
+            elif kind == "action":
+                entries.append(ActionEntry(e["wall_time"], e["call_id"], e["tool"],
+                                           e["args_summary"], e["status"]))
+            elif kind == "chat":
+                entries.append(ChatEntry(e["wall_time"], e["text"]))
+        self.answers = entries
+
     # -- answer pane callbacks (wired to Responder) ----------------------
 
     def on_answer_start(self) -> None:

@@ -1,8 +1,8 @@
 """Minimal ACP (Agent Client Protocol) client over a subprocess' stdio.
 
 JSON-RPC 2.0, one LF-delimited JSON object per line — only the slice of the
-protocol earpiece needs: `initialize`, `session/new`, `session/prompt`,
-`session/cancel`, incoming `session/update` notifications and
+protocol earpiece needs: `initialize`, `session/new`, `session/load`,
+`session/prompt`, `session/cancel`, incoming `session/update` notifications and
 `session/request_permission` requests. The harness (opencode, claude-code-acp,
 pi, gemini --experimental-acp, ...) owns the model endpoint, the tools, and the
 conversation context.
@@ -98,6 +98,15 @@ class ACPAgent:
             "session/new", {"cwd": cwd, "mcpServers": mcp_servers}
         )
         return result["sessionId"]
+
+    async def load_session(self, session_id: str, cwd: str, mcp_servers: list[dict]) -> None:
+        """Reattach to an existing harness session (resume). The harness replays
+        the prior conversation via session/update before this returns, so a
+        caller that has already restored its own UI should silence on_update for
+        the duration. Only valid if the harness advertised `loadSession`."""
+        await self._request(
+            "session/load", {"sessionId": session_id, "cwd": cwd, "mcpServers": mcp_servers}
+        )
 
     async def prompt(self, session_id: str, text: str) -> str:
         """One turn. Returns the stopReason (end_turn | cancelled | ...).

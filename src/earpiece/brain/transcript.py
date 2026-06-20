@@ -82,6 +82,43 @@ class TranscriptStore:
         """True if utterances have arrived since the last drained turn."""
         return bool(self._pending)
 
+    # ---- persistence (resume) -----------------------------------------
+
+    def snapshot(self) -> dict:
+        """Serialize the durable conversation state. Pending utterances are
+        committed first so leftover lines aren't replayed as fresh input when
+        the session is resumed."""
+        if self._pending:
+            self.drain_pending_block()
+        return {
+            "mission": self.mission,
+            "utterances": [
+                {"speaker": u.speaker, "text": u.text, "wall_time": u.wall_time}
+                for u in self.utterances
+            ],
+            "history": [{"role": e.role, "content": e.content} for e in self._history],
+        }
+
+    def restore(self, data: dict) -> None:
+        """Rebuild from a `snapshot()`. Transient state (interim, dedup window)
+        is left empty — only the finalized record carries across runs."""
+        self.utterances = [
+            Utterance(speaker=u["speaker"], text=u["text"], wall_time=u["wall_time"])
+            for u in data.get("utterances", [])
+        ]
+        self._history = [
+            _HistoryEntry(role=e["role"], content=e["content"])
+            for e in data.get("history", [])
+        ]
+
+    def history_text(self) -> str:
+        """Committed history as a readable transcript — fed to a fresh harness
+        session as a context prefix when native reattach isn't available."""
+        return "\n\n".join(
+            f"[{'assistant' if e.role == 'assistant' else 'transcript'}]\n{e.content}"
+            for e in self._history
+        )
+
     # ---- chat history -------------------------------------------------
 
     def as_messages(self) -> list[Message]:

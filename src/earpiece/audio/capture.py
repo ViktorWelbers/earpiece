@@ -23,11 +23,15 @@ from ..events import AudioChunk, Speaker
 log = logging.getLogger(__name__)
 
 
-def resolve_device(spec: int | str | None, *, kind: str) -> int | None:
+def resolve_device(spec: int | str | None, *, kind: str, fallback: bool = False) -> int | None:
     """Resolve a device index/name-substring to a device index.
 
     None means: system default (mic/output) — except system-audio capture,
     where we auto-detect a BlackHole-style loopback device.
+
+    With ``fallback``, a name that matches nothing falls back to the system
+    default (returns None) with a warning, instead of erroring — e.g. a mic
+    named in the config that isn't currently plugged in.
     """
     if spec is None:
         return None
@@ -40,6 +44,9 @@ def resolve_device(spec: int | str | None, *, kind: str) -> int | None:
         and d["max_input_channels" if kind == "input" else "max_output_channels"] > 0
     ]
     if not matches:
+        if fallback:
+            log.warning("no %s device matching %r — using the system default", kind, spec)
+            return None
         raise DeviceError(f"No {kind} device matching {spec!r}. Run `earpiece devices`.")
     if len(matches) > 1:
         names = ", ".join(f"[{i}] {sd.query_devices(i)['name']}" for i in matches)
