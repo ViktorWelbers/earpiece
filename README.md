@@ -96,6 +96,11 @@ marker, and a fresh turn starts on the latest line.
 
 The harness keeps the conversation context in its own session; each turn earpiece forwards
 only the transcript lines since the previous one, so it needs no model client of its own.
+That session is **compressed and reopened every 25 turns** (`AGENT_SESSION_TURNS`): left to
+run, a session eventually stops answering the transcript and starts *continuing* it —
+inventing the next `THEM:` line and replying to itself — so earpiece asks the outgoing
+session to brief its successor and seeds a fresh one with that summary. You'll see a brief
+pause between turns when it rotates.
 Full design doc: [AGENTS.md](AGENTS.md).
 
 ## Setup
@@ -169,7 +174,9 @@ config**: the only model in the loop lives inside the harness.
 
 Optional keys: `AGENT_CWD` to pin the harness's working directory,
 `AGENT_AUTO_TOOLS = "jira_search*,lookup_*"` (comma-separated globs) to let specific
-non-read-only tools run without confirmation, `DEEPGRAM_API_KEY` for `--stt deepgram`,
+non-read-only tools run without confirmation, `AGENT_SESSION_TURNS` (default `25`, `0`
+disables) to tune how often the harness session is compressed and reopened,
+`DEEPGRAM_API_KEY` for `--stt deepgram`,
 `STT_API_KEY` for hosted whisper endpoints, and `EARPIECE_MIC_DEVICE` /
 `EARPIECE_SYSTEM_DEVICE` / `EARPIECE_OUTPUT_DEVICE` to pin audio devices (index or name
 substring; the matching CLI flags override). `EARPIECE_CONFIG=/path/to/file.toml` relocates

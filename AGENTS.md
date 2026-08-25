@@ -248,6 +248,7 @@ A single `Settings` object resolved from env vars + CLI flags (flags win):
 | Agent harness | `AGENT_CMD` | — (required), e.g. `npx pi-acp` |
 | Agent workspace | `AGENT_CWD` | earpiece's cwd |
 | Auto-approved tools | `AGENT_AUTO_TOOLS` | empty (comma-separated fnmatch globs) |
+| Session rotation | `AGENT_SESSION_TURNS` | `25` turns (`0` disables) |
 | MCP servers | `[mcp_servers.*]` config tables (file only) | none |
 | Deepgram key | `DEEPGRAM_API_KEY` | required when `--stt deepgram` |
 | Mic device | `--mic-device` | system default input |
@@ -340,7 +341,8 @@ status-bar carrier the orchestrator fills in directly.
   all pending requests with a clear `ACPError`.
 - `responder.py` drives turns: `start(prompt_text=None)` spawns the turn task; `session/prompt`
   carries the pending transcript lines — or, when `prompt_text` is given (a chat-bar message),
-  the operator's text verbatim (mission instructions prefix the first turn only). Streamed
+  the operator's text verbatim (mission instructions prefix the first turn of each harness
+  session — see rotation below). Streamed
   `agent_message_chunk`s fan out to console + TTS (sentence-buffered: split on `.?!` ≥ ~40
   chars so speech doesn't stutter); tool calls fan out to the answers timeline, keyed by the
   harness `toolCallId` so repeated calls to one tool stay distinct.
@@ -348,6 +350,18 @@ status-bar carrier the orchestrator fills in directly.
   with the interrupted marker, and resolves any pending permission gate as `cancelled`.
 - Owns answer bookkeeping: on natural end append the full answer to the local history mirror
   (kept for the record/tests; the harness session is the source of truth).
+- Session rotation (`_maybe_rotate`): a harness session that accumulates hundreds of
+  `[hh:mm:ss] SPEAKER: ...` micro-turns degenerates — it stops answering the transcript and
+  starts *continuing* it, inventing the next speaker line and replying to itself. Age is the
+  variable, not the conversation, so every `AGENT_SESSION_TURNS` turns the outgoing session is
+  asked to brief its successor (`COMPRESS_PROMPT`), a fresh `session/new` is opened, and the
+  brief is seeded through the same `_resume_prefix` path replay-resume uses. `_compress()`
+  silences `on_update` for the duration so the brief never reaches the answers pane or TTS.
+  Best-effort: a failed rotation stays on the old session. It runs inside the answer task on
+  purpose — `partial_answer` stays truthy until it returns, so the orchestrator cannot prompt
+  a session that is being replaced; `Answer.finished` keeps a cancel arriving mid-rotation
+  from committing the answer twice. The tradeoff is two-sided: rotating sooner limits
+  degeneration, but re-summarizes the conversation from its own summary more often.
 - The harness is spawned at orchestrator startup (`start_agent()`) so a broken `AGENT_CMD`
   is one clear error before audio starts, with a lazy fallback on first turn.
 - Style is enforced by the instructions prompt (§4.11): 1–3 sentences for spoken cues; tool
