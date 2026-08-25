@@ -112,6 +112,14 @@ class Settings:
     # comma-separated fnmatch globs of tool names that run without confirmation
     # (read-only tool kinds — read/search/fetch/think — always auto-run)
     agent_auto_tools: str = ""
+    # turns before the harness session is compressed and reopened; 0 disables.
+    # A long-lived session degenerates: past a few dozen micro-turns the agent
+    # stops answering the transcript and starts continuing it, inventing the
+    # next "[hh:mm:ss] THEM:" line and replying to itself. Observed onset was
+    # gradual — a stray bad answer from ~turn 12, half of them wrong by ~turn 45.
+    # 25 keeps well clear of that while limiting how many times the conversation
+    # is re-summarized from its own summary.
+    agent_session_turns: int = 25
     # {name: {command, args, env} | {url, headers}} — from [mcp_servers.*] tables,
     # forwarded to the harness at session setup
     mcp_servers: dict = field(default_factory=dict)
@@ -174,8 +182,17 @@ class Settings:
             agent_cmd=agent_cmd,
             agent_cwd=get("AGENT_CWD"),
             agent_auto_tools=get("AGENT_AUTO_TOOLS", ""),
+            agent_session_turns=_int(get("AGENT_SESSION_TURNS"), 25),
             mcp_servers=load_mcp_servers(),
         )
+
+
+def _int(value: str | None, default: int) -> int:
+    """Config/env ints are strings; a malformed one falls back to the default."""
+    try:
+        return int(value) if value is not None else default
+    except ValueError:
+        return default
 
 
 class ConfigError(RuntimeError):

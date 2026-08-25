@@ -65,9 +65,9 @@ def test_configure_deepgram_asks_for_key(isolated_config):
 
 def test_configure_show_prints_values_and_sources(isolated_config, monkeypatch):
     isolated_config.write_text(
-        'LLM_BASE_URL = "http://my-llm:8000/v1"\nLLM_API_KEY = "sk-verysecretkey123"\n'
+        'SOME_BASE_URL = "http://my-service:8000/v1"\nSOME_API_KEY = "sk-verysecretkey123"\n'
     )
-    monkeypatch.setenv("LLM_BASE_URL", "http://from-env/v1")
+    monkeypatch.setenv("SOME_BASE_URL", "http://from-env/v1")
 
     result = runner.invoke(app, ["configure", "show"])
     assert result.exit_code == 0, result.output
