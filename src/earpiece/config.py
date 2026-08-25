@@ -46,9 +46,7 @@ def _load_config_file() -> dict[str, str]:
 def load_mcp_servers() -> dict[str, dict]:
     """The [mcp_servers.<name>] tables: command/args/env (stdio) or url (HTTP/SSE)."""
     servers = _read_config_toml().get("mcp_servers", {})
-    if not isinstance(servers, dict) or not all(
-        isinstance(v, dict) for v in servers.values()
-    ):
+    if not isinstance(servers, dict) or not all(isinstance(v, dict) for v in servers.values()):
         raise ConfigError("mcp_servers must contain [mcp_servers.<name>] tables")
     return servers
 
@@ -62,9 +60,7 @@ def _toml_value(value: str | bool | list) -> str:
     return f'"{escaped}"'
 
 
-def save_config(
-    values: dict[str, str | bool], mcp_servers: dict[str, dict] | None = None
-) -> Path:
+def save_config(values: dict[str, str | bool], mcp_servers: dict[str, dict] | None = None) -> Path:
     """Write the config file (created by `earpiece configure`)."""
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)

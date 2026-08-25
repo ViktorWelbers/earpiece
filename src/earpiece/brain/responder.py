@@ -42,8 +42,12 @@ NOTHING = "(nothing to add)"
 # tool kinds that never mutate anything — run without asking
 _READONLY_KINDS = ("read", "search", "fetch", "think")
 # ACP tool-call statuses -> timeline statuses ("pending" is reserved for the y/n gate)
-_STATUS_MAP = {"pending": "running", "in_progress": "running",
-               "completed": "done", "failed": "failed"}
+_STATUS_MAP = {
+    "pending": "running",
+    "in_progress": "running",
+    "completed": "done",
+    "failed": "failed",
+}
 
 
 class Answer:
@@ -117,8 +121,9 @@ class Responder:
         first-turn context prefix so the agent still has the history."""
         init = await self.agent.start()
         agent_info = init.get("agentInfo") or {}
-        log.info("acp agent ready: %s %s", agent_info.get("name", "?"),
-                 agent_info.get("version", ""))
+        log.info(
+            "acp agent ready: %s %s", agent_info.get("name", "?"), agent_info.get("version", "")
+        )
         caps = init.get("agentCapabilities") or {}
         cwd, mcp = self._session_args()
 
@@ -132,9 +137,7 @@ class Responder:
         """The (cwd, mcpServers) pair every session/new and session/load needs."""
         return self.settings.agent_cwd or os.getcwd(), acp_mcp_servers(self.settings.mcp_servers)
 
-    async def _reattach(
-        self, resume: SessionRecord, caps: dict, cwd: str, mcp: list[dict]
-    ) -> bool:
+    async def _reattach(self, resume: SessionRecord, caps: dict, cwd: str, mcp: list[dict]) -> bool:
         """Try ACP session/load. Returns True only if the harness owned the
         session and reattached cleanly; False asks the caller to fall back."""
         if not (resume.harness_session_id and caps.get("loadSession")):
@@ -219,7 +222,8 @@ class Responder:
                 instructions = responder_system(self.settings.mission, with_tools=True)
                 prefix = (
                     f"\n\n[prior conversation]\n{self._resume_prefix}"
-                    if self._resume_prefix else ""
+                    if self._resume_prefix
+                    else ""
                 )
                 block = f"{instructions}{prefix}\n\n[{label}]\n{block}"
                 self._instructed = True
@@ -284,8 +288,12 @@ class Responder:
         self._resume_prefix = summary
         self._instructed = False  # mission + system prompt go out again
         self._turns = 0
-        log.info("rotated harness session %s -> %s (%d chars of context carried)",
-                 old_session, self._session_id, len(summary))
+        log.info(
+            "rotated harness session %s -> %s (%d chars of context carried)",
+            old_session,
+            self._session_id,
+            len(summary),
+        )
 
     async def _compress(self) -> str:
         """Ask the outgoing session to brief its successor.
@@ -354,14 +362,10 @@ class Responder:
         args = tool_call.get("rawInput") or {}
         if self._auto_approved(title, tool_call.get("kind")):
             return self._verdict(tool_id, title, args, options, approved=True)
-        self.pending_action = PendingAction(
-            title, args, asyncio.get_running_loop().create_future()
-        )
+        self.pending_action = PendingAction(title, args, asyncio.get_running_loop().create_future())
         self._notify_action(tool_id, title, args, "pending")
         try:
-            verdict = await asyncio.wait_for(
-                self.pending_action.decision, _CONFIRM_TIMEOUT_SECS
-            )
+            verdict = await asyncio.wait_for(self.pending_action.decision, _CONFIRM_TIMEOUT_SECS)
         except TimeoutError:
             verdict = "deny"
         finally:

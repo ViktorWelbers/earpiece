@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Action versions only. The uv ecosystem is deliberately left out: with a
+  # committed lockfile it produces a steady drip of bump PRs this repo doesn't
+  # need yet.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"

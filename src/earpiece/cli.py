@@ -1,8 +1,8 @@
 """CLI entry point.
 
-    earpiece configure
-    earpiece run "help me in this sales discussion" --voice say
-    earpiece devices
+earpiece configure
+earpiece run "help me in this sales discussion" --voice say
+earpiece devices
 """
 
 from __future__ import annotations
@@ -54,7 +54,10 @@ def devices() -> None:
         if "blackhole" in d["name"].lower():
             notes.append("loopback (system-audio candidate)")
         table.add_row(
-            str(i), d["name"], str(d["max_input_channels"]), str(d["max_output_channels"]),
+            str(i),
+            d["name"],
+            str(d["max_input_channels"]),
+            str(d["max_output_channels"]),
             ", ".join(notes),
         )
     Console().print(table)
@@ -169,8 +172,8 @@ def _wizard() -> None:
     console.print(f"\n[green]saved[/green] {path}")
     console.print(
         "[dim]optional: give the agent extra MCP tools by adding tables to the config "
-        "file, e.g.\n  [mcp_servers.jira]\n  command = \"uvx\"\n  "
-        "args = [\"mcp-atlassian\"][/dim]"
+        'file, e.g.\n  [mcp_servers.jira]\n  command = "uvx"\n  '
+        'args = ["mcp-atlassian"][/dim]'
     )
     console.print('try it:  [bold]earpiece run "help me with tech trivia"[/bold]')
 
@@ -194,6 +197,7 @@ def run(
         filename="earpiece.log",
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+
     def make_settings() -> Settings:
         return Settings.from_env(
             mission,
@@ -237,8 +241,10 @@ def resume(
     console = Console()
     records = session_store.list_sessions()
     if not records:
-        console.print("[yellow]no saved sessions yet[/yellow] — start one with "
-                      '[bold]earpiece run "..."[/bold]')
+        console.print(
+            "[yellow]no saved sessions yet[/yellow] — start one with "
+            '[bold]earpiece run "..."[/bold]'
+        )
         raise typer.Exit(0)
 
     table = Table(title="resume a session", show_lines=False)
@@ -249,8 +255,9 @@ def resume(
     table.add_column("workspace", style="dim")
     for i, rec in enumerate(records, 1):
         mission = rec.mission if len(rec.mission) <= 50 else rec.mission[:49] + "…"
-        table.add_row(str(i), mission, session_store.ago(rec.updated_at),
-                      str(rec.turns), rec.agent_cwd or "—")
+        table.add_row(
+            str(i), mission, session_store.ago(rec.updated_at), str(rec.turns), rec.agent_cwd or "—"
+        )
     console.print(table)
 
     choice = typer.prompt("resume which? (number, or q to quit)", default="1")
@@ -323,13 +330,17 @@ _ESC_SEQ = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1bO.|\x1b")
 # sequences above before they're stripped; PgUp/PgDn page, arrows nudge.
 _SCROLL_PAGE = 10
 _NAV_KEYS: dict[bytes, tuple[str, int]] = {
-    b"\x1b[5~": ("scroll_up", _SCROLL_PAGE),   # PageUp
+    b"\x1b[5~": ("scroll_up", _SCROLL_PAGE),  # PageUp
     b"\x1b[6~": ("scroll_down", _SCROLL_PAGE),  # PageDown
-    b"\x1b[A": ("scroll_up", 1), b"\x1bOA": ("scroll_up", 1),       # ↑
-    b"\x1b[B": ("scroll_down", 1), b"\x1bOB": ("scroll_down", 1),   # ↓
-    b"\x1b[H": ("scroll_to_top", 0), b"\x1b[1~": ("scroll_to_top", 0),
+    b"\x1b[A": ("scroll_up", 1),
+    b"\x1bOA": ("scroll_up", 1),  # ↑
+    b"\x1b[B": ("scroll_down", 1),
+    b"\x1bOB": ("scroll_down", 1),  # ↓
+    b"\x1b[H": ("scroll_to_top", 0),
+    b"\x1b[1~": ("scroll_to_top", 0),
     b"\x1bOH": ("scroll_to_top", 0),
-    b"\x1b[F": ("scroll_to_bottom", 0), b"\x1b[4~": ("scroll_to_bottom", 0),
+    b"\x1b[F": ("scroll_to_bottom", 0),
+    b"\x1b[4~": ("scroll_to_bottom", 0),
     b"\x1bOF": ("scroll_to_bottom", 0),
 }
 

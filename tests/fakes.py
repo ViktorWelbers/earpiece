@@ -64,6 +64,7 @@ class FakeACPAgent:
     async def load_session(self, session_id: str, cwd: str, mcp_servers: list) -> None:
         if self.load_error:
             from earpiece.brain.acp import ACPError
+
             raise ACPError("harness no longer has that session")
         self.loaded.append(session_id)
 

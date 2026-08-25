@@ -107,8 +107,7 @@ class TranscriptStore:
             for u in data.get("utterances", [])
         ]
         self._history = [
-            _HistoryEntry(role=e["role"], content=e["content"])
-            for e in data.get("history", [])
+            _HistoryEntry(role=e["role"], content=e["content"]) for e in data.get("history", [])
         ]
 
     def history_text(self) -> str:
@@ -127,9 +126,7 @@ class TranscriptStore:
             block = "\n".join(u.line() for u in self._pending)
             self._history.append(_HistoryEntry("user", block))
             self._pending.clear()
-        messages: list[Message] = [
-            {"role": "system", "content": responder_system(self.mission)}
-        ]
+        messages: list[Message] = [{"role": "system", "content": responder_system(self.mission)}]
         messages.extend({"role": e.role, "content": e.content} for e in self._history)
         return messages
 

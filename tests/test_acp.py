@@ -70,10 +70,20 @@ async def test_prompt_streams_updates_then_resolves():
 
     prompt = asyncio.create_task(agent.prompt("s1", "hello"))
     await asyncio.sleep(0)
-    feed(reader, {"jsonrpc": "2.0", "method": "session/update",
-                  "params": {"sessionId": "s1",
-                             "update": {"sessionUpdate": "agent_message_chunk",
-                                        "content": {"type": "text", "text": "hi "}}}})
+    feed(
+        reader,
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "s1",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "hi "},
+                },
+            },
+        },
+    )
     await reply_to(writer, "session/prompt", {"stopReason": "end_turn"}, reader)
     assert await prompt == "end_turn"
     assert updates[0]["content"]["text"] == "hi "
@@ -90,9 +100,15 @@ async def test_permission_request_is_answered():
         return {"outcome": {"outcome": "selected", "optionId": "ok"}}
 
     agent.request_permission = grant
-    feed(reader, {"jsonrpc": "2.0", "id": 7, "method": "session/request_permission",
-                  "params": {"sessionId": "s1", "toolCall": {"toolCallId": "t1"},
-                             "options": []}})
+    feed(
+        reader,
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "session/request_permission",
+            "params": {"sessionId": "s1", "toolCall": {"toolCallId": "t1"}, "options": []},
+        },
+    )
     for _ in range(100):
         if any(line.get("id") == 7 and "result" in line for line in writer.lines):
             break
@@ -104,8 +120,15 @@ async def test_permission_request_is_answered():
 
 async def test_unsupported_request_gets_method_not_found():
     agent, writer, reader = await started_agent()
-    feed(reader, {"jsonrpc": "2.0", "id": 8, "method": "fs/read_text_file",
-                  "params": {"path": "/etc/passwd"}})
+    feed(
+        reader,
+        {
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "fs/read_text_file",
+            "params": {"path": "/etc/passwd"},
+        },
+    )
     for _ in range(100):
         if any(line.get("id") == 8 for line in writer.lines):
             break
@@ -120,8 +143,14 @@ async def test_error_response_raises_acp_error():
     prompt = asyncio.create_task(agent.prompt("s1", "hello"))
     await asyncio.sleep(0)
     request = next(line for line in writer.lines if line.get("method") == "session/prompt")
-    feed(reader, {"jsonrpc": "2.0", "id": request["id"],
-                  "error": {"code": -32603, "message": "model exploded"}})
+    feed(
+        reader,
+        {
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "error": {"code": -32603, "message": "model exploded"},
+        },
+    )
     with pytest.raises(ACPError, match="model exploded"):
         await prompt
     await agent.stop()

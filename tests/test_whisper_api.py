@@ -66,6 +66,7 @@ async def test_preroll_is_included_in_segment():
     segment_secs = len(engine.received[-1]) / 2 / SAMPLE_RATE
     assert segment_secs > 20 * 0.02
 
+
 async def test_single_block_blip_is_ignored():
     # a single loud block never reaches the VAD attack threshold
     engine = make_engine()

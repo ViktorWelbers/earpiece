@@ -37,10 +37,14 @@ class MacosSayTTS:
             await _run(
                 [
                     "afconvert",
-                    "-f", "WAVE",
-                    "-d", f"LEI16@{SAMPLE_RATE}",
-                    "-c", "1",
-                    str(aiff), str(wav),
+                    "-f",
+                    "WAVE",
+                    "-d",
+                    f"LEI16@{SAMPLE_RATE}",
+                    "-c",
+                    "1",
+                    str(aiff),
+                    str(wav),
                 ]
             )
             with wave.open(str(wav), "rb") as f:

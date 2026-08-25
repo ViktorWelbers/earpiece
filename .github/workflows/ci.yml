@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Superseded PR runs are pointless; keep main's runs so every commit reports.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # fails if uv.lock drifted from pyproject.toml
+      - run: uv lock --check
+
+  test:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            python: "3.12"
+            coverage: true
+          - runner: ubuntu-latest
+            python: "3.13"
+          # macOS is earpiece's target platform (CoreAudio, `say`, `afconvert`)
+          - runner: namespace-profile-viktor-test
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+      # sounddevice bundles PortAudio in its macOS wheel but not its Linux one,
+      # and audio/capture.py imports it unconditionally — without this the suite
+      # fails at collection, not at a test.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+      - run: uv sync
+      - if: ${{ !matrix.coverage }}
+        run: uv run pytest -q
+      - if: ${{ matrix.coverage }}
+        run: uv run pytest -q --cov=earpiece --cov-report=term-missing
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # earpiece ships as a uv tool with a console script; a broken build
+      # wouldn't show up in any test
+      - run: uv build

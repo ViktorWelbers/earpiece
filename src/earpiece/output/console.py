@@ -163,12 +163,25 @@ class ConsoleView:
         out: list[dict] = []
         for e in self.answers:
             if isinstance(e, AnswerEntry):
-                out.append({"kind": "answer", "wall_time": e.wall_time,
-                            "text": e.text, "interrupted": e.interrupted})
+                out.append(
+                    {
+                        "kind": "answer",
+                        "wall_time": e.wall_time,
+                        "text": e.text,
+                        "interrupted": e.interrupted,
+                    }
+                )
             elif isinstance(e, ActionEntry):
-                out.append({"kind": "action", "wall_time": e.wall_time,
-                            "call_id": e.call_id, "tool": e.tool,
-                            "args_summary": e.args_summary, "status": e.status})
+                out.append(
+                    {
+                        "kind": "action",
+                        "wall_time": e.wall_time,
+                        "call_id": e.call_id,
+                        "tool": e.tool,
+                        "args_summary": e.args_summary,
+                        "status": e.status,
+                    }
+                )
             elif isinstance(e, ChatEntry):
                 out.append({"kind": "chat", "wall_time": e.wall_time, "text": e.text})
         return out
@@ -180,8 +193,11 @@ class ConsoleView:
             if kind == "answer":
                 entries.append(AnswerEntry(e["wall_time"], e["text"], e["interrupted"]))
             elif kind == "action":
-                entries.append(ActionEntry(e["wall_time"], e["call_id"], e["tool"],
-                                           e["args_summary"], e["status"]))
+                entries.append(
+                    ActionEntry(
+                        e["wall_time"], e["call_id"], e["tool"], e["args_summary"], e["status"]
+                    )
+                )
             elif kind == "chat":
                 entries.append(ChatEntry(e["wall_time"], e["text"]))
         self.answers = entries
@@ -256,8 +272,11 @@ class ConsoleView:
         text.append("› ", style="bold green")
         text.append(self.input_buffer)
         text.append("▌", style="green")  # cursor
-        return Panel(text, title="chat → agent  [dim](enter=send · empty=respond now)[/dim]",
-                     border_style="green")
+        return Panel(
+            text,
+            title="chat → agent  [dim](enter=send · empty=respond now)[/dim]",
+            border_style="green",
+        )
 
     def _transcript_panel(self) -> Panel:
         lines: list[Text] = []
@@ -275,8 +294,11 @@ class ConsoleView:
         rows = self._visual_rows(lines)
         self._max_rows = max(self._max_rows, len(rows))
         visible = self._window(rows, self._pane_height(), self.scroll)
-        return Panel(Group(*visible) if visible else Text("listening…", style="dim"),
-                     title=f"transcript{self._scroll_hint(len(rows))}", border_style="blue")
+        return Panel(
+            Group(*visible) if visible else Text("listening…", style="dim"),
+            title=f"transcript{self._scroll_hint(len(rows))}",
+            border_style="blue",
+        )
 
     def _answer_panel(self) -> Panel:
         blocks: list[Text] = []
