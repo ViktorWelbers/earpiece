@@ -23,31 +23,25 @@ jobs:
       # fails if uv.lock drifted from pyproject.toml
       - run: uv lock --check
 
+  # macOS only, on purpose: earpiece requires macOS (README "Requires macOS" —
+  # CoreAudio, a BlackHole loopback, `say`/`afconvert`). Cross-platform support
+  # is a non-goal, so a green Linux leg would prove nothing a user relies on.
+  # The matrix varies Python instead, to back the `requires-python = ">=3.12"`.
   test:
-    runs-on: ${{ matrix.runner }}
+    runs-on: namespace-profile-viktor-test
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            python: "3.12"
+          - python: "3.12"
             coverage: true
-          - runner: ubuntu-latest
-            python: "3.13"
-          # macOS is earpiece's target platform (CoreAudio, `say`, `afconvert`)
-          - runner: namespace-profile-viktor-test
-            python: "3.12"
+          - python: "3.13"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
           python-version: ${{ matrix.python }}
-      # sounddevice bundles PortAudio in its macOS wheel but not its Linux one,
-      # and audio/capture.py imports it unconditionally — without this the suite
-      # fails at collection, not at a test.
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2
       - run: uv sync
       - if: ${{ !matrix.coverage }}
         run: uv run pytest -q
@@ -62,5 +56,6 @@ jobs:
         with:
           enable-cache: true
       # earpiece ships as a uv tool with a console script; a broken build
-      # wouldn't show up in any test
+      # wouldn't show up in any test. Safe on Linux: the wheel is py3-none-any
+      # and ruff is static, so neither job touches macOS-specific paths.
       - run: uv build
