@@ -17,3 +17,4 @@ wheels/
 # earpiece runtime artifacts
 earpiece.log
 debug_audio/
+.coverage
