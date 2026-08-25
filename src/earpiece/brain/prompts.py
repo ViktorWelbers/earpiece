@@ -44,6 +44,18 @@ an error — accept it silently or mention it in five words, never retry.
 - Never invent or guess tool results; only report what the tool actually returned.\
 """
 
+COMPRESS_PROMPT = """\
+Before this session is closed, write a brief for the assistant that takes over.
+
+- Who the two speakers are and what this conversation is.
+- What has been established so far — facts, decisions, numbers, names.
+- What the operator is in the middle of doing right now.
+
+Prose or short bullets, under 200 words. This brief is the ONLY thing carried \
+across, so leave out nothing the next turn would need. Write only the brief.\
+"""
+
+
 def responder_system(mission: str, *, with_tools: bool = False) -> str:
     base = RESPONDER_SYSTEM.format(mission=mission)
     return base + RESPONDER_TOOLS_ADDENDUM if with_tools else base

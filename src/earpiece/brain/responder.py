@@ -27,7 +27,7 @@ from fnmatch import fnmatch
 
 from ..config import Settings
 from .acp import ACPAgent, ACPError, acp_mcp_servers
-from .prompts import responder_system
+from .prompts import COMPRESS_PROMPT, responder_system
 from .session_store import SessionRecord
 from .transcript import TranscriptStore
 
@@ -56,6 +56,7 @@ class Answer:
         self.text = ""
         self.task: asyncio.Task | None = None
         self.interrupted = False
+        self.finished = False  # committed; a later cancel must not commit again
 
 
 @dataclass
@@ -97,6 +98,7 @@ class Responder:
         self._resume_prefix = ""  # prior transcript injected on the first turn (replay resume)
         self._tool_titles: dict[str, str] = {}  # toolCallId -> human title
         self._tts_buffer = ""
+        self._turns = 0  # turns on the current harness session (see _rotate)
 
     @property
     def session_id(self) -> str | None:
@@ -118,14 +120,17 @@ class Responder:
         log.info("acp agent ready: %s %s", agent_info.get("name", "?"),
                  agent_info.get("version", ""))
         caps = init.get("agentCapabilities") or {}
-        cwd = self.settings.agent_cwd or os.getcwd()
-        mcp = acp_mcp_servers(self.settings.mcp_servers)
+        cwd, mcp = self._session_args()
 
         if resume is not None and await self._reattach(resume, caps, cwd, mcp):
             return
         if resume is not None:  # couldn't reattach — seed the new session with history
             self._resume_prefix = self.transcript.history_text()
         self._session_id = await self.agent.new_session(cwd, mcp)
+
+    def _session_args(self) -> tuple[str, list[dict]]:
+        """The (cwd, mcpServers) pair every session/new and session/load needs."""
+        return self.settings.agent_cwd or os.getcwd(), acp_mcp_servers(self.settings.mcp_servers)
 
     async def _reattach(
         self, resume: SessionRecord, caps: dict, cwd: str, mcp: list[dict]
@@ -225,25 +230,86 @@ class Responder:
                 self._emit_sentence(self._tts_buffer)
             if answer.text.strip() and answer.text.strip() != NOTHING:
                 self.transcript.add_answer(answer.text, interrupted=False)
+            answer.finished = True
             if self.on_end is not None:
                 self.on_end(answer.id, False)
+            self._turns += 1
+            # Rotation runs inside the answer task on purpose: `partial_answer`
+            # stays truthy until it returns, so the orchestrator can't prompt the
+            # session we are in the middle of replacing.
+            await self._maybe_rotate()
         except asyncio.CancelledError:
             if self._session_id is not None:
                 with contextlib.suppress(Exception):
                     await self.agent.cancel(self._session_id)
-            if answer.text.strip():
-                self.transcript.add_answer(answer.text, interrupted=True)
-            if self.on_end is not None:
-                self.on_end(answer.id, True)
+            if not answer.finished:  # cancelled mid-turn, not mid-rotation
+                if answer.text.strip():
+                    self.transcript.add_answer(answer.text, interrupted=True)
+                if self.on_end is not None:
+                    self.on_end(answer.id, True)
             raise
         except Exception as exc:  # noqa: BLE001 — a failed turn must not be invisible
             log.exception("responder turn failed")
-            if answer.text.strip():
-                self.transcript.add_answer(answer.text, interrupted=True)
+            if not answer.finished:
+                if answer.text.strip():
+                    self.transcript.add_answer(answer.text, interrupted=True)
+                if self.on_end is not None:
+                    self.on_end(answer.id, True)
             if self.on_error is not None:
                 self.on_error(exc)
-            if self.on_end is not None:
-                self.on_end(answer.id, True)
+
+    # ------------------------------------------------------ session rotation
+
+    async def _maybe_rotate(self) -> None:
+        """Compress the session and reopen it once it has run long enough.
+
+        A harness session that accumulates hundreds of `[hh:mm:ss] SPEAKER: ...`
+        micro-turns eventually stops answering the transcript and starts
+        *continuing* it — inventing the next speaker line and replying to itself.
+        Age is the variable, so we hand the conversation to a fresh session as a
+        summary before it gets there. Best-effort: a rotation that fails leaves
+        the old session in place rather than dropping the conversation."""
+        limit = self.settings.agent_session_turns
+        if limit <= 0 or self._turns < limit or self._session_id is None:
+            return
+        old_session = self._session_id
+        try:
+            summary = await self._compress()
+            cwd, mcp = self._session_args()
+            self._session_id = await self.agent.new_session(cwd, mcp)
+        except Exception:  # noqa: BLE001 — keep talking on the old session
+            log.warning("session rotation failed; staying on %s", old_session, exc_info=True)
+            self._turns = 0  # don't retry on every subsequent turn
+            return
+        self._resume_prefix = summary
+        self._instructed = False  # mission + system prompt go out again
+        self._turns = 0
+        log.info("rotated harness session %s -> %s (%d chars of context carried)",
+                 old_session, self._session_id, len(summary))
+
+    async def _compress(self) -> str:
+        """Ask the outgoing session to brief its successor.
+
+        The reply is collected instead of streamed: silencing `on_update` for the
+        duration keeps the summary out of the answers pane and the TTS queue, the
+        same trick `_reattach` uses for a replayed conversation."""
+        chunks: list[str] = []
+
+        def collect(params: dict) -> None:
+            update = params.get("update") or {}
+            if update.get("sessionUpdate") != "agent_message_chunk":
+                return
+            content = update.get("content") or {}
+            if content.get("type") == "text" and content.get("text"):
+                chunks.append(content["text"])
+
+        saved = self.agent.on_update
+        self.agent.on_update = collect
+        try:
+            await self.agent.prompt(self._session_id or "", COMPRESS_PROMPT)
+        finally:
+            self.agent.on_update = saved
+        return "".join(chunks).strip()
 
     # --------------------------------------------------- updates from harness
 
