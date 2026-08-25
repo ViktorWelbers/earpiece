@@ -132,9 +132,7 @@ def test_wrapped_long_lines_make_the_pane_scrollable():
     for i in range(4):
         add_line(view, f"{i}: " + "word " * 80)  # each wraps to many rows
     view._render()
-    rows = view._visual_rows(
-        [Text(f"{i}: " + "word " * 80) for i in range(4)]
-    )
+    rows = view._visual_rows([Text(f"{i}: " + "word " * 80) for i in range(4)])
     assert len(rows) > 4  # wrapping expanded 4 entries into many rows
     assert view._scroll_cap() > 0  # so the pane is scrollable despite few entries
 

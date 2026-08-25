@@ -94,9 +94,7 @@ class ACPAgent:
     # ------------------------------------------------------------- requests
 
     async def new_session(self, cwd: str, mcp_servers: list[dict]) -> str:
-        result = await self._request(
-            "session/new", {"cwd": cwd, "mcpServers": mcp_servers}
-        )
+        result = await self._request("session/new", {"cwd": cwd, "mcpServers": mcp_servers})
         return result["sessionId"]
 
     async def load_session(self, session_id: str, cwd: str, mcp_servers: list[dict]) -> None:
@@ -119,8 +117,9 @@ class ACPAgent:
         return result.get("stopReason", "end_turn")
 
     async def cancel(self, session_id: str) -> None:
-        await self._send({"jsonrpc": "2.0", "method": "session/cancel",
-                          "params": {"sessionId": session_id}})
+        await self._send(
+            {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session_id}}
+        )
 
     # -------------------------------------------------------------- plumbing
 
@@ -173,9 +172,7 @@ class ACPAgent:
                 future.set_result(msg.get("result") or {})
             return
         if "id" in msg:  # request from the agent — needs a response
-            asyncio.create_task(
-                self._answer_request(msg), name=f"acp-req-{msg['method']}"
-            )
+            asyncio.create_task(self._answer_request(msg), name=f"acp-req-{msg['method']}")
             return
         # notification
         if msg["method"] == "session/update" and self.on_update is not None:
@@ -227,8 +224,7 @@ def acp_mcp_servers(config: dict[str, dict]) -> list[dict]:
                     "name": name,
                     "url": cfg["url"],
                     "headers": [
-                        {"name": str(k), "value": str(v)}
-                        for k, v in cfg.get("headers", {}).items()
+                        {"name": str(k), "value": str(v)} for k, v in cfg.get("headers", {}).items()
                     ],
                 }
             )
@@ -238,10 +234,7 @@ def acp_mcp_servers(config: dict[str, dict]) -> list[dict]:
                 "name": name,
                 "command": cfg["command"],
                 "args": [str(a) for a in cfg.get("args", [])],
-                "env": [
-                    {"name": str(k), "value": str(v)}
-                    for k, v in cfg.get("env", {}).items()
-                ],
+                "env": [{"name": str(k), "value": str(v)} for k, v in cfg.get("env", {}).items()],
             }
         )
     return servers

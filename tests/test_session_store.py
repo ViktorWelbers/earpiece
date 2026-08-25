@@ -76,8 +76,9 @@ def test_turns_counts_only_answers():
 
 
 def add_final(store: TranscriptStore, speaker: str, text: str) -> None:
-    store.add(TranscriptEvent(source=speaker, text=text, is_final=True,
-                              started_at=0.0, ended_at=0.0))
+    store.add(
+        TranscriptEvent(source=speaker, text=text, is_final=True, started_at=0.0, ended_at=0.0)
+    )
 
 
 def test_transcript_snapshot_restore_round_trips_and_commits_pending():
@@ -129,7 +130,9 @@ def test_console_snapshot_restore_round_trips_mixed_timeline():
     restored = ConsoleView(TranscriptStore(mission="m"))
     restored.restore_answers(json.loads(json.dumps(snap)))  # survives a JSON trip
     assert [type(e).__name__ for e in restored.answers] == [
-        "ChatEntry", "AnswerEntry", "ActionEntry",
+        "ChatEntry",
+        "AnswerEntry",
+        "ActionEntry",
     ]
     assert restored.answers[1].text == "Three action items."
     assert restored.answers[2].tool == "create_ticket"

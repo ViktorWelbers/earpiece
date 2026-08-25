@@ -116,11 +116,15 @@ class Orchestrator:
 
         dump_dir = Path("debug_audio") if self.settings.debug_dump_wav else None
         mic_cap = ChannelCapture(
-            "ME", mic_dev, self.mic_q,
+            "ME",
+            mic_dev,
+            self.mic_q,
             dump_wav_to=(dump_dir / "me.wav") if dump_dir else None,
         )
         sys_cap = ChannelCapture(
-            "THEM", sys_dev, self.sys_q,
+            "THEM",
+            sys_dev,
+            self.sys_q,
             dump_wav_to=(dump_dir / "them.wav") if dump_dir else None,
         )
         self._captures = [mic_cap, sys_cap]  # read by the status loop (drop counts)

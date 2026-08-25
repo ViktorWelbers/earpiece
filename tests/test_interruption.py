@@ -140,11 +140,14 @@ async def test_tool_call_updates_surface_as_actions():
     responder, _, _, _ = make_responder(
         [
             [
-                {"sessionUpdate": "tool_call", "toolCallId": "t1",
-                 "title": "web_search", "status": "pending",
-                 "rawInput": {"query": "rollout times"}},
-                {"sessionUpdate": "tool_call_update", "toolCallId": "t1",
-                 "status": "completed"},
+                {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "t1",
+                    "title": "web_search",
+                    "status": "pending",
+                    "rawInput": {"query": "rollout times"},
+                },
+                {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"},
                 "Search says four weeks.",
             ]
         ],
@@ -228,8 +231,12 @@ async def test_write_kind_waits_for_approval():
             [
                 permission_step(
                     outcomes,
-                    {"toolCallId": "t1", "title": "create_ticket", "kind": "execute",
-                     "rawInput": {"summary": "bug"}},
+                    {
+                        "toolCallId": "t1",
+                        "title": "create_ticket",
+                        "kind": "execute",
+                        "rawInput": {"summary": "bug"},
+                    },
                 ),
                 "Created the ticket.",
             ]
