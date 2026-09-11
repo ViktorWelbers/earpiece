@@ -17,4 +17,8 @@ wheels/
 # earpiece runtime artifacts
 earpiece.log
 debug_audio/
+
+# paddock local-harness state (machine-local, not for git)
+.paddock/
+
 .coverage
