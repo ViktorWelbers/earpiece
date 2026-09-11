@@ -74,6 +74,7 @@ _KNOWN_KEYS = (
     "AGENT_CMD",
     "AGENT_CWD",
     "AGENT_AUTO_TOOLS",
+    "AGENT_AUTO_APPROVE",
     "AGENT_SESSION_TURNS",
     "EARPIECE_STT",
     "EARPIECE_MIC_DEVICE",
@@ -188,6 +189,14 @@ def run(
         None, help="STT engine: deepgram | whisper (default: from config file, else deepgram)"
     ),
     voice: str | None = typer.Option(None, help="TTS engine: say | elevenlabs (default: text)"),
+    workspace: str | None = typer.Option(
+        None, help="Directory the agent harness can see (default: where earpiece was started)"
+    ),
+    auto: bool = typer.Option(
+        True,
+        "--auto/--no-auto",
+        help="Approve tool calls without asking. --no-auto restores the y/n gate.",
+    ),
     debug_dump_wav: bool = typer.Option(False, help="Dump captured audio to debug_audio/*.wav"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Debug logging to earpiece.log"),
 ) -> None:
@@ -207,6 +216,8 @@ def run(
             stt_engine=stt,
             tts_engine=voice,
             debug_dump_wav=debug_dump_wav,
+            agent_cwd=workspace,
+            auto_approve=auto,
         )
 
     try:
@@ -235,6 +246,14 @@ def resume(
     output_device: str | None = typer.Option(None, help="TTS output device (your earpiece)"),
     stt: str | None = typer.Option(None, help="STT engine: deepgram | whisper"),
     voice: str | None = typer.Option(None, help="TTS engine: say | elevenlabs (default: text)"),
+    workspace: str | None = typer.Option(
+        None, help="Directory the agent harness can see (default: where earpiece was started)"
+    ),
+    auto: bool = typer.Option(
+        True,
+        "--auto/--no-auto",
+        help="Approve tool calls without asking. --no-auto restores the y/n gate.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Debug logging to earpiece.log"),
 ) -> None:
     """Pick a past session to resume (restores the transcript + the agent's memory)."""
@@ -282,6 +301,8 @@ def resume(
             output_device=output_device,
             stt_engine=stt,
             tts_engine=voice,
+            agent_cwd=workspace,
+            auto_approve=auto,
         )
     except ConfigError as exc:
         err_console.print(f"[red]config error:[/red] {exc}")

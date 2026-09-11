@@ -5,7 +5,7 @@ import asyncio
 
 from fakes import FakeACPAgent, FakeTTSSink, final
 
-from earpiece.brain.responder import Responder
+from earpiece.brain.responder import Responder, _pick_option
 from earpiece.brain.transcript import TranscriptStore
 from earpiece.config import Settings
 
@@ -199,6 +199,7 @@ async def test_readonly_kind_auto_approves():
             ]
         ],
         delta_delay=0,
+        agent_auto_approve=False,
     )
     await responder.start().task
     assert outcomes == [{"outcome": {"outcome": "selected", "optionId": "ok"}}]
@@ -219,9 +220,44 @@ async def test_auto_tools_glob_approves_without_asking():
         ],
         delta_delay=0,
         agent_auto_tools="jira_*",
+        agent_auto_approve=False,
     )
     await responder.start().task
     assert outcomes == [{"outcome": {"outcome": "selected", "optionId": "ok"}}]
+
+
+async def test_auto_approve_lets_a_shell_call_through_without_the_gate():
+    """The real failure: Claude Code shells out (kind="execute") to read files,
+    which the y/n gate stalled for 30s and then denied. Default is now auto."""
+    outcomes: list = []
+    responder, _, _, _ = make_responder(
+        [
+            [
+                permission_step(
+                    outcomes,
+                    {"toolCallId": "t1", "title": "ls -la /Users/me/code", "kind": "execute"},
+                ),
+                "It contains three files.",
+            ]
+        ],
+        delta_delay=0,
+    )
+    await responder.start().task
+    assert outcomes == [{"outcome": {"outcome": "selected", "optionId": "ok"}}]
+    assert responder.pending_action is None
+    assert ("ls -la /Users/me/code", "pending") not in responder.actions
+
+
+async def test_auto_approve_prefers_allow_always_so_the_harness_stops_asking():
+    always = [
+        {"optionId": "forever", "name": "Always allow", "kind": "allow_always"},
+        {"optionId": "ok", "name": "Allow", "kind": "allow_once"},
+        {"optionId": "no", "name": "Reject", "kind": "reject_once"},
+    ]
+    assert _pick_option(always, "allow", "always") == "forever"
+    assert _pick_option(always, "allow", "once") == "ok"
+    # a harness that offers no allow_always still gets an allow
+    assert _pick_option(OPTIONS, "allow", "always") == "ok"
 
 
 async def test_write_kind_waits_for_approval():
@@ -242,6 +278,7 @@ async def test_write_kind_waits_for_approval():
             ]
         ],
         delta_delay=0,
+        agent_auto_approve=False,
     )
     task = responder.start().task
     while responder.pending_action is None:
@@ -268,6 +305,7 @@ async def test_denied_action_returns_reject_option():
             ]
         ],
         delta_delay=0,
+        agent_auto_approve=False,
     )
     task = responder.start().task
     while responder.pending_action is None:
@@ -290,6 +328,7 @@ async def test_interrupt_cancels_pending_permission():
             ]
         ],
         delta_delay=0,
+        agent_auto_approve=False,
     )
     responder.start()
     while responder.pending_action is None:

@@ -39,6 +39,11 @@ log = logging.getLogger(__name__)
 # engine (stalled transcription, retraction bug, dead connection) — promote it.
 _STALE_INTERIM_SECS = 6.0
 
+# A transcript turn stuck this long (almost always a slow tool call) has been
+# outrun by the conversation. Cancel it and answer the latest lines instead —
+# a cue about what was said 30 seconds ago is worth nothing.
+_TURN_STALL_SECS = 8.0
+
 
 class Orchestrator:
     def __init__(self, settings: Settings, resume: SessionRecord | None = None) -> None:
@@ -330,15 +335,25 @@ class Orchestrator:
         """Always answer: every finalized utterance (either speaker) gets a
         response. In voice mode an in-flight answer is interrupted so the latest
         line wins (don't talk over stale audio); in text-only mode the answer is
-        left to finish and the new lines coalesce into a follow-up turn."""
+        left to finish and the new lines coalesce into a follow-up turn — unless
+        it has stalled, in which case it is cancelled so the copilot doesn't go
+        silent behind a slow tool call."""
         in_flight = self.responder.partial_answer is not None
         voice = self.tts is not None
-        action = Action.INTERRUPT_AND_RESPOND if (in_flight and voice) else Action.RESPOND
+        stalled = (
+            in_flight
+            and not self.responder.turn_from_operator
+            and self.responder.turn_age() > _TURN_STALL_SECS
+        )
+        action = (
+            Action.INTERRUPT_AND_RESPOND if (in_flight and (voice or stalled)) else Action.RESPOND
+        )
         if forced:
             return Decision(action=action, reason="push-to-ask", urgency="high")
         if event is None:
             return Decision(action=Action.STAY_SILENT, reason="no new input", urgency="low")
-        return Decision(action=action, reason="new utterance", urgency="normal")
+        reason = "stalled turn" if stalled else "new utterance"
+        return Decision(action=action, reason=reason, urgency="normal")
 
     async def _start_answer(self, prompt_text: str | None = None) -> None:
         self.console.on_answer_start()

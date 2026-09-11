@@ -15,8 +15,14 @@ def make_orch(**overrides) -> Orchestrator:
     return Orchestrator(Settings(mission="m", agent_cmd="fake --acp", **overrides))
 
 
-def set_in_flight(orch: Orchestrator, in_flight: bool) -> None:
-    orch.responder = SimpleNamespace(partial_answer="…" if in_flight else None)
+def set_in_flight(
+    orch: Orchestrator, in_flight: bool, *, age: float = 0.0, from_operator: bool = False
+) -> None:
+    orch.responder = SimpleNamespace(
+        partial_answer="…" if in_flight else None,
+        turn_age=lambda: age,
+        turn_from_operator=from_operator,
+    )
 
 
 def test_text_mode_does_not_interrupt_in_flight_answer():
@@ -32,6 +38,23 @@ def test_voice_mode_interrupts_in_flight_answer():
     set_in_flight(orch, True)
     decision = orch._decide(final("THEM", "and pricing?"), forced=False)
     assert decision.action is Action.INTERRUPT_AND_RESPOND
+
+
+def test_text_mode_interrupts_a_stalled_turn():
+    """A turn wedged behind a slow tool call must not silence the copilot."""
+    orch = make_orch()  # text-only: normally never interrupts
+    set_in_flight(orch, True, age=30.0)
+    decision = orch._decide(final("THEM", "and pricing?"), forced=False)
+    assert decision.action is Action.INTERRUPT_AND_RESPOND
+    assert decision.reason == "stalled turn"
+
+
+def test_operator_chat_turns_are_never_stall_interrupted():
+    """You asked for that work from the chat bar — let it finish."""
+    orch = make_orch()
+    set_in_flight(orch, True, age=30.0, from_operator=True)
+    decision = orch._decide(final("THEM", "and pricing?"), forced=False)
+    assert decision.action is Action.RESPOND
 
 
 def test_idle_answer_responds_when_nothing_in_flight():
