@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -61,6 +62,10 @@ class Answer:
         self.task: asyncio.Task | None = None
         self.interrupted = False
         self.finished = False  # committed; a later cancel must not commit again
+        self.started_at = time.monotonic()
+        # operator chat turns are work you explicitly asked for — never
+        # stall-interrupted, however long the agent takes
+        self.from_operator = False
 
 
 @dataclass
@@ -170,11 +175,30 @@ class Responder:
             return answer.text or "(answer just started)"
         return None
 
+    def turn_age(self) -> float:
+        """Seconds the in-flight turn has been running, 0.0 when idle.
+
+        A turn blocked on a slow tool call keeps `partial_answer` truthy, which
+        stops the brain loop starting a new one — so the orchestrator needs to
+        know when the conversation has outrun the answer.
+        """
+        answer = self.current
+        if answer is None or answer.task is None or answer.task.done():
+            return 0.0
+        return time.monotonic() - answer.started_at
+
+    @property
+    def turn_from_operator(self) -> bool:
+        """True when the in-flight turn came from the chat bar, not the transcript."""
+        answer = self.current
+        return answer is not None and answer.from_operator
+
     def start(self, prompt_text: str | None = None) -> Answer:
         """Begin a new agent turn. With no argument the turn covers the
         transcript lines since the last one; `prompt_text` instead forwards an
         operator message straight to the ACP agent (the chat box)."""
         answer = Answer()
+        answer.from_operator = prompt_text is not None
         answer.task = asyncio.create_task(
             self._run(answer, prompt_text), name=f"responder-{answer.id}"
         )
@@ -378,12 +402,18 @@ class Responder:
         self, call_id: str, title: str, args: dict, options: list, *, approved: bool
     ) -> dict:
         self._notify_action(call_id, title, args, "running" if approved else "denied")
-        option_id = _pick_option(options, "allow" if approved else "reject")
+        # An automatic approval should persist so the harness stops asking for
+        # that command class; a deliberate keypress should not silently grant
+        # permission forever.
+        prefer = "always" if (approved and self.settings.agent_auto_approve) else "once"
+        option_id = _pick_option(options, "allow" if approved else "reject", prefer)
         if option_id is None:
             return {"outcome": {"outcome": "cancelled"}}
         return {"outcome": {"outcome": "selected", "optionId": option_id}}
 
     def _auto_approved(self, title: str, kind: str | None) -> bool:
+        if self.settings.agent_auto_approve:
+            return True
         if kind in _READONLY_KINDS:
             return True
         globs = [g.strip() for g in self.settings.agent_auto_tools.split(",") if g.strip()]
@@ -411,10 +441,10 @@ class Responder:
             self.on_sentence(sentence)
 
 
-def _pick_option(options: list, prefix: str) -> str | None:
-    """Prefer the `<prefix>_once` permission option, else any `<prefix>_*`."""
+def _pick_option(options: list, prefix: str, prefer: str = "once") -> str | None:
+    """Prefer the `<prefix>_<prefer>` permission option, else any `<prefix>_*`."""
     for option in options:
-        if option.get("kind") == f"{prefix}_once":
+        if option.get("kind") == f"{prefix}_{prefer}":
             return option.get("optionId")
     for option in options:
         if str(option.get("kind", "")).startswith(prefix):

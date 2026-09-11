@@ -104,10 +104,18 @@ class Settings:
     # the ACP agent harness that answers (and acts): a shell-ish command line,
     # e.g. "opencode acp" | "npx @zed-industries/claude-code-acp" | "npx pi-acp"
     agent_cmd: str | None = None
-    agent_cwd: str | None = None  # workspace the harness operates in (default: cwd)
+    # workspace the harness operates in; None = the directory earpiece was
+    # started from, which is almost always the one you want it to see
+    agent_cwd: str | None = None
     # comma-separated fnmatch globs of tool names that run without confirmation
-    # (read-only tool kinds — read/search/fetch/think — always auto-run)
+    # (read-only tool kinds — read/search/fetch/think — always auto-run).
+    # Only consulted when agent_auto_approve is off.
     agent_auto_tools: str = ""
+    # Approve every tool call without asking. On by default: mid-conversation
+    # you are talking to a person, not watching the TUI, so the y/n gate was
+    # never "confirm" — it was "stall 30s, then deny". Tool calls still show up
+    # in the answers timeline, so there is still a visible audit trail.
+    agent_auto_approve: bool = True
     # turns before the harness session is compressed and reopened; 0 disables.
     # A long-lived session degenerates: past a few dozen micro-turns the agent
     # stops answering the transcript and starts continuing it, inventing the
@@ -131,6 +139,8 @@ class Settings:
         stt_engine: str | None = None,
         tts_engine: str | None = None,
         debug_dump_wav: bool = False,
+        agent_cwd: str | None = None,
+        auto_approve: bool | None = None,
     ) -> Settings:
         cfg = _load_config_file()
 
@@ -158,6 +168,10 @@ class Settings:
                 "speaches, LocalAI, or https://api.openai.com/v1 with model whisper-1)"
             )
 
+        workspace = agent_cwd if agent_cwd is not None else get("AGENT_CWD")
+        if workspace is not None and not Path(workspace).expanduser().is_dir():
+            raise ConfigError(f"--workspace/AGENT_CWD is not a directory: {workspace}")
+
         return Settings(
             mission=mission,
             deepgram_api_key=deepgram_key,
@@ -176,11 +190,26 @@ class Settings:
             tts_engine=tts_engine,
             debug_dump_wav=debug_dump_wav,
             agent_cmd=agent_cmd,
-            agent_cwd=get("AGENT_CWD"),
+            agent_cwd=str(Path(workspace).expanduser()) if workspace else None,
             agent_auto_tools=get("AGENT_AUTO_TOOLS", ""),
+            agent_auto_approve=(
+                auto_approve if auto_approve is not None else _bool(get("AGENT_AUTO_APPROVE"), True)
+            ),
             agent_session_turns=_int(get("AGENT_SESSION_TURNS"), 25),
             mcp_servers=load_mcp_servers(),
         )
+
+
+def _bool(value: str | None, default: bool) -> bool:
+    """Config/env booleans are strings; anything unrecognised keeps the default."""
+    if value is None:
+        return default
+    lowered = value.strip().lower()
+    if lowered in ("1", "true", "yes", "on"):
+        return True
+    if lowered in ("0", "false", "no", "off"):
+        return False
+    return default
 
 
 def _int(value: str | None, default: int) -> int:

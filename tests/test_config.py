@@ -71,10 +71,12 @@ def write_config(env, tmp_path, body: str):
 
 def test_config_file_fills_in_missing_env(env, tmp_path):
     env.delenv("AGENT_CMD")
-    write_config(env, tmp_path, 'AGENT_CMD = "opencode acp"\nAGENT_CWD = "/tmp/ws"\n')
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    write_config(env, tmp_path, f'AGENT_CMD = "opencode acp"\nAGENT_CWD = "{ws}"\n')
     s = Settings.from_env("mission")
     assert s.agent_cmd == "opencode acp"
-    assert s.agent_cwd == "/tmp/ws"
+    assert s.agent_cwd == str(ws)
 
 
 def test_env_wins_over_config_file(env, tmp_path):
@@ -180,3 +182,32 @@ def test_mcp_servers_map_to_acp_shape(env, tmp_path):
     }
     assert servers[1]["type"] == "http"
     assert servers[1]["headers"] == [{"name": "Authorization", "value": "Bearer x"}]
+
+
+def test_workspace_flag_overrides_config_agent_cwd(env, tmp_path):
+    ws = tmp_path / "project"
+    ws.mkdir()
+    env.setenv("AGENT_CWD", str(tmp_path))
+    assert Settings.from_env("mission").agent_cwd == str(tmp_path)
+    assert Settings.from_env("mission", agent_cwd=str(ws)).agent_cwd == str(ws)
+
+
+def test_workspace_that_is_not_a_directory_is_rejected(env):
+    with pytest.raises(ConfigError, match="not a directory"):
+        Settings.from_env("mission", agent_cwd="/no/such/directory")
+
+
+def test_unset_agent_cwd_means_the_launch_directory(env):
+    """None is the signal for "wherever earpiece was started" — the responder
+    resolves it with os.getcwd() when it opens the session."""
+    assert Settings.from_env("mission").agent_cwd is None
+
+
+def test_auto_approve_defaults_on_and_is_configurable(env, tmp_path):
+    assert Settings.from_env("mission").agent_auto_approve is True
+    assert Settings.from_env("mission", auto_approve=False).agent_auto_approve is False
+
+    write_config(env, tmp_path, 'AGENT_CMD = "x acp"\nAGENT_AUTO_APPROVE = false\n')
+    assert Settings.from_env("mission").agent_auto_approve is False
+    # an explicit --auto still beats the file
+    assert Settings.from_env("mission", auto_approve=True).agent_auto_approve is True

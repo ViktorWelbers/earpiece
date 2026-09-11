@@ -188,7 +188,9 @@ class ACPAgent:
                 result = {"outcome": {"outcome": "cancelled"}}
             await self._send({"jsonrpc": "2.0", "id": msg_id, "result": result})
             return
-        # fs/terminal/etc.: we advertised no such capabilities
+        # fs/terminal/etc.: we advertised no such capabilities. Log it — a
+        # silently rejected client method looks like the agent "just stopping".
+        log.warning("acp: rejecting unsupported client method %s", method)
         await self._send(
             {
                 "jsonrpc": "2.0",
